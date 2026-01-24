@@ -108,12 +108,19 @@ const extractDetailItem = ($, requestUrl) => {
 
     const rating = extractRating($);
 
+    const developer = normalizeText(
+        $('[itemprop="publisher"] [itemprop="name"]').text()
+        || $('[data-testid="developer-link"]').text()
+        || $('a[href*="/developer/"]').first().text(),
+    ) || null;
+
     return {
         title,
         description,
         category,
         rating,
         pricing,
+        developer,
         url: requestUrl,
     };
 };
@@ -200,34 +207,61 @@ await Actor.main(async () => {
             const $ = cheerioLoad(content);
 
             if (label === 'LIST') {
-                const links = [];
-                $('a[href]').each((_, el) => {
-                    const href = $(el).attr('href');
-                    if (href && (/\/software\//i.test(href) || /alternativeto\.net\/software\//i.test(href))) {
-                        const absolute = toAbsoluteUrl(href, currentUrl);
-                        if (absolute) links.push(absolute.split('#')[0]);
-                    }
+                const tools = [];
+                // Target the app cards
+                $('div.flex.flex-col.w-full.gap-3, div[data-testid="app-card"]').each((_, el) => {
+                    const $card = $(el);
+                    const $titleLink = $card.find('h2 a, a.no-link-color').first();
+                    const title = normalizeText($titleLink.text());
+                    const href = $titleLink.attr('href');
+                    const url = href ? toAbsoluteUrl(href, currentUrl) : null;
+
+                    if (!url || !url.includes('/software/')) return;
+
+                    const description = normalizeText($card.find('p, .Description-module-scss-module__text').first().text());
+                    const logoUrl = $card.find('img[data-testid^="icon-"]').attr('src') || $card.find('img').first().attr('src');
+                    const likesRaw = $card.find('[class*="heart"] span, .ModernLikeButton-module-scss-module__xuujAq__heart span').text();
+                    const likes = parseInt(likesRaw.replace(/[^0-9]/g, ''), 10) || 0;
+
+                    const tags = [];
+                    $card.find('.flex.flex-wrap.gap-2 span, .flex.flex-wrap.gap-2 a').each((i, tag) => {
+                        tags.push(normalizeText($(tag).text()));
+                    });
+
+                    // Platforms are usually links or tags with specific names
+                    const platforms = tags.filter(t => /Windows|Mac|Android|iOS|Linux|Online/i.test(t));
+                    const license = tags.find(t => /Free|Paid|Freemium|Open Source|Proprietary/i.test(t)) || null;
+
+                    tools.push({
+                        title,
+                        url: url.split('#')[0],
+                        description,
+                        logoUrl,
+                        likes,
+                        platforms,
+                        license,
+                        _source: 'alternativeto',
+                    });
                 });
 
-                const uniqueLinks = [...new Set(links)];
-                log.info(`Found ${uniqueLinks.length} tools on list page`);
+                log.info(`Found ${tools.length} tool cards on list page`);
 
-                if (collectDetails) {
-                    for (const link of uniqueLinks) {
-                        if (saved + scheduledDetails < resultsWanted && !seenDetails.has(link)) {
-                            seenDetails.add(link);
+                for (const tool of tools) {
+                    if (saved >= resultsWanted) break;
+
+                    if (collectDetails) {
+                        if (!seenDetails.has(tool.url)) {
+                            seenDetails.add(tool.url);
                             scheduledDetails++;
                             await crawlerInstance.addRequests([{
-                                url: link,
-                                userData: { label: 'DETAIL' }
+                                url: tool.url,
+                                userData: { label: 'DETAIL', toolPreview: tool }
                             }]);
                         }
-                    }
-                } else {
-                    const toPush = uniqueLinks.slice(0, resultsWanted - saved).map(url => ({ url, _source: 'alternativeto' }));
-                    if (toPush.length) {
-                        await Actor.pushData(toPush);
-                        saved += toPush.length;
+                    } else if (!seenDetails.has(tool.url)) {
+                        seenDetails.add(tool.url);
+                        await Actor.pushData(tool);
+                        saved++;
                     }
                 }
 
@@ -247,18 +281,34 @@ await Actor.main(async () => {
             } else if (label === 'DETAIL') {
                 if (saved >= resultsWanted) return;
 
+                const toolPreview = request.userData.toolPreview || {};
+
                 try {
                     const item = extractDetailItem($, currentUrl);
-                    await Actor.pushData(item);
+                    // Merge preview data with detail data
+                    const finalItem = {
+                        ...toolPreview,
+                        ...item,
+                        description: item.description || toolPreview.description,
+                        url: currentUrl,
+                    };
+                    delete finalItem._source;
+
+                    await Actor.pushData(finalItem);
                     saved++;
-                    log.info(`Saved item ${saved}/${resultsWanted}: ${item.title}`);
+                    log.info(`Saved item ${saved}/${resultsWanted}: ${finalItem.title}`);
 
                     if (saved >= resultsWanted) {
                         log.info('Results limit reached, stopping...');
                         await crawlerInstance.autoscaledPool?.abort();
                     }
                 } catch (error) {
-                    log.error(`Failed to extract detail: ${error.message}`);
+                    log.error(`Failed to extract detail for ${currentUrl}: ${error.message}`);
+                    // Push at least the preview data if detail fails
+                    if (toolPreview.title) {
+                        await Actor.pushData(toolPreview);
+                        saved++;
+                    }
                 } finally {
                     scheduledDetails--;
                 }

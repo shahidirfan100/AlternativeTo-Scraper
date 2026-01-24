@@ -55,6 +55,11 @@ Each item in the dataset contains structured information about a software tool:
 | `rating` | Number | User rating (on a 5-point scale). |
 | `pricing` | String | License type or pricing model (e.g., Free, Paid, Freemium). |
 | `url` | String | Absolute AlternativeTo URL of the tool. |
+| `logoUrl` | String | URL of the tool's logo/icon. |
+| `likes` | Integer | Number of likes the tool has received on AlternativeTo. |
+| `platforms` | Array | List of supported platforms (e.g., Windows, Mac, Android). |
+| `license` | String | Specific license type (Free, Open Source, etc.). |
+| `developer` | String | The developer or publisher of the software. |
 
 ---
 
@@ -109,7 +114,11 @@ Gather a large number of results across multiple pages with residential proxies.
   "category": "AI Image Generator",
   "rating": 4.8,
   "pricing": "Paid",
-  "url": "https://alternativeto.net/software/midjourney/"
+  "url": "https://alternativeto.net/software/midjourney/",
+  "logoUrl": "https://d2.alternativeto.net/dist/icons/midjourney_234234.png",
+  "likes": 1250,
+  "platforms": ["Online"],
+  "license": "Paid"
 }
 ```
 
