@@ -1,0 +1,82 @@
+{
+  "actorSpecification": 1,
+  "fields": {
+    "type": "object",
+    "properties": {
+      "title": {
+        "type": ["string", "null"],
+        "title": "Tool Name"
+      },
+      "description": {
+        "type": ["string", "null"],
+        "title": "Description"
+      },
+      "category": {
+        "type": ["string", "null"],
+        "title": "Category"
+      },
+      "rating": {
+        "type": ["number", "null"],
+        "title": "Rating"
+      },
+      "pricing": {
+        "type": ["string", "null"],
+        "title": "Pricing"
+      },
+      "url": {
+        "type": "string",
+        "format": "uri",
+        "title": "URL"
+      },
+      "_source": {
+        "type": ["string", "null"],
+        "title": "Source"
+      }
+    },
+    "required": ["url"]
+  },
+  "views": {
+    "overview": {
+      "title": "Overview",
+      "transformation": {
+        "fields": [
+          "title",
+          "description",
+          "category",
+          "rating",
+          "pricing",
+          "url"
+        ]
+      },
+      "display": {
+        "component": "table",
+        "properties": {
+          "title": {
+            "label": "Tool Name",
+            "format": "text"
+          },
+          "description": {
+            "label": "Description",
+            "format": "text"
+          },
+          "category": {
+            "label": "Category",
+            "format": "text"
+          },
+          "rating": {
+            "label": "Rating",
+            "format": "number"
+          },
+          "pricing": {
+            "label": "Pricing",
+            "format": "text"
+          },
+          "url": {
+            "label": "URL",
+            "format": "link"
+          }
+        }
+      }
+    }
+  }
+}

@@ -1,0 +1,70 @@
+{
+  "title": "AlternativeTo Scraper",
+  "description": "Scrape AI tools and alternatives from AlternativeTo.net. Provide either a search keyword OR an AlternativeTo search/category URL (startUrl, url, or startUrls). Actor paginates and optionally scrapes detail pages.",
+  "type": "object",
+  "schemaVersion": 1,
+  "properties": {
+    "startUrl": {
+      "title": "Start URL",
+      "type": "string",
+      "description": "Start scraping from a specific AlternativeTo.net URL. If provided, this will be used instead of Keyword. Example: https://alternativeto.net/category/ai-tools/ai-image-generator/",
+      "editor": "textfield",
+      "prefill": "https://alternativeto.net/category/ai-tools/ai-image-generator/"
+    },
+    "startUrls": {
+      "title": "Start URLs (list)",
+      "type": "array",
+      "description": "List of AlternativeTo URLs to start from. If provided, overrides Keyword.",
+      "editor": "requestListSources",
+      "default": [
+        {
+          "url": "https://alternativeto.net/category/ai-tools/ai-image-generator/"
+        }
+      ]
+    },
+    "keyword": {
+      "title": "Search Keyword (if not using Start URL)",
+      "type": "string",
+      "description": "Search keyword on AlternativeTo. Examples: 'DALL-E', 'Midjourney', 'AI image generator'.",
+      "editor": "textfield",
+      "prefill": "AI image generator"
+    },
+    "collectDetails": {
+      "title": "Collect tool details",
+      "type": "boolean",
+      "description": "If enabled, scraper opens tool detail pages for full description and additional info.",
+      "editor": "checkbox",
+      "default": true
+    },
+    "results_wanted": {
+      "title": "Maximum number of tools",
+      "type": "integer",
+      "description": "The maximum number of tools to collect. Leave empty to collect all available tools.",
+      "minimum": 1,
+      "default": 100,
+      "editor": "number"
+    },
+    "max_pages": {
+      "title": "Maximum number of pages",
+      "type": "integer",
+      "description": "A safety cap on the number of search result pages to visit.",
+      "minimum": 1,
+      "editor": "number",
+      "default": 20
+    },
+    "proxyConfiguration": {
+      "title": "Proxy configuration",
+      "type": "object",
+      "description": "Use Apify Proxy for best results.",
+      "editor": "proxy",
+      "default": {
+        "useApifyProxy": true,
+        "apifyProxyGroups": [
+          "RESIDENTIAL"
+        ]
+      }
+    }
+  },
+  "required": [],
+  "additionalProperties": false
+}
