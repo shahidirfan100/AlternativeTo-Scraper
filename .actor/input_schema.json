@@ -4,13 +4,6 @@
   "type": "object",
   "schemaVersion": 1,
   "properties": {
-    "startUrl": {
-      "title": "Start URL",
-      "type": "string",
-      "description": "Start scraping from a specific AlternativeTo.net URL. If provided, this will be used instead of Keyword. Example: https://alternativeto.net/category/ai-tools/ai-image-generator/",
-      "editor": "textfield",
-      "prefill": "https://alternativeto.net/category/ai-tools/ai-image-generator/"
-    },
     "startUrls": {
       "title": "Start URLs (list)",
       "type": "array",

@@ -1,16 +1,16 @@
-FROM alpine:latest
+# Specify the base Docker image with Playwright + Chrome
+FROM apify/actor-node-playwright-chrome:22-1.56.1
 
-RUN apk add --no-cache nodejs npm
+# Copy just package.json and package-lock.json first for caching
+COPY --chown=myuser:myuser package*.json ./
 
-RUN addgroup app && adduser app -G app -D
-WORKDIR /home/app
-USER app
+# Install NPM packages (production only)
+RUN npm --quiet set progress=false \
+    && npm install --omit=dev --omit=optional \
+    && rm -r ~/.npm
 
-COPY --chown=app:app package*.json ./
-RUN npm i --omit=dev && rm -r ~/.npm || true
+# Copy remaining source code
+COPY --chown=myuser:myuser . ./
 
-COPY --chown=app:app . ./
-
-ENV APIFY_LOG_LEVEL=INFO
-
+# Start the actor
 CMD npm start --silent

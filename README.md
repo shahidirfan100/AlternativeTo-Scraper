@@ -1,84 +1,168 @@
 # AlternativeTo Scraper
 
-Apify Actor that scrapes tools and software alternatives from AlternativeTo.net using Crawlee’s `CheerioCrawler` (no browser).
+Extract comprehensive data from AlternativeTo.net with ease. Collect thousands of software listings, alternatives, and tool details automatically. Perfect for market research, competitor analysis, and product discovery.
 
-## What it does
+---
 
-- Crawls AlternativeTo search/category pages, handling pagination until the requested number of results is reached.
-- Optionally opens each tool detail page to extract descriptions, category, rating, and pricing.
-- Stops early once targets are met; deduplicates list/detail requests.
-- Saves structured items to the default Apify dataset with an overview view.
+## Features
 
-## How it works
+- **Deep Data Extraction** — Scrape detailed software descriptions, categories, ratings, and pricing models.
+- **Smart Navigation** — Automatically handles pagination to collect as many results as you specify.
+- **Focused Results** — Seed your search with keywords or start directly from category and search URLs.
+- **Automated Deduplication** — Built-in logic ensures you only get unique tool listings without duplicates.
+- **Reliable Collection** — Designed to handle website protection systems for consistent and successful runs.
 
-- Uses `CheerioCrawler` with gotScraping headers (no Playwright).
-- Input is normalized: accepts `startUrl`, `startUrls`, or `url`; otherwise builds a search URL from `keyword`.
-- Validates numeric limits (`results_wanted`, `max_pages`) and enforces a crawl cap.
-- Uses `apify/log` for logging and respects provided proxy configuration.
+---
 
-## Input
+## Use Cases
 
-All fields are optional unless noted.
+### Competitor Analysis
+Track alternatives to your own software or your competitors. Understand what users are looking for and identify gaps in the market by analyzing alternative listings.
 
-- `startUrl` (string): A single AlternativeTo URL to start from. Example: `https://alternativeto.net/category/ai-tools/ai-image-generator/`.
-- `startUrls` (array): List of AlternativeTo URLs to seed multiple searches/categories.
-- `keyword` (string): Search keyword used when no start URL is given. Examples: `DALL-E`, `Midjourney`, `AI image generator`.
-- `results_wanted` (integer): Maximum number of tools to collect. Default: 100.
-- `max_pages` (integer): Safety cap on number of list pages to visit. Default: 20.
-- `collectDetails` (boolean): Visit tool detail pages for full info. Default: true.
-- `proxyConfiguration` (object): Proxy settings; use Apify Proxy (residential) for best results.
+### Software Asset Management
+Build a comprehensive database of software tools used across different categories. Compare pricing models and ratings to optimize your organization's tool stack.
 
-Example `INPUT.json`:
+### Market Intelligence
+Monitor trending software categories and identify up-and-coming tools before they go mainstream. Track how software is categorized and rated by the community.
+
+### Content Generation
+Gather data for "Best Alternatives" articles or comparison blog posts. Quickly build lists of similar tools with descriptions and metadata.
+
+---
+
+## Input Parameters
+
+| Parameter | Type | Required | Default | Description |
+|-----------|------|----------|---------|-------------|
+| `startUrls` | Array | No | `[]` | List of AlternativeTo URLs (categories or searches) to start from. |
+| `keyword` | String | No | `"AI image generator"` | Search keyword used when no start URLs are provided. |
+| `results_wanted` | Integer | No | `100` | Maximum number of tools to collect. |
+| `max_pages` | Integer | No | `20` | Safety cap on the number of result pages to visit. |
+| `collectDetails` | Boolean | No | `true` | When enabled, visits tool detail pages for full descriptions and extra info. |
+| `proxyConfiguration` | Object | No | `{"useApifyProxy": true}` | Proxy settings; residential proxies are highly recommended. |
+
+---
+
+## Output Data
+
+Each item in the dataset contains structured information about a software tool:
+
+| Field | Type | Description |
+|-------|------|-------------|
+| `title` | String | Name of the software or tool. |
+| `description` | String | Comprehensive description of the tool's features and purpose. |
+| `category` | String | Primary category or classification. |
+| `rating` | Number | User rating (on a 5-point scale). |
+| `pricing` | String | License type or pricing model (e.g., Free, Paid, Freemium). |
+| `url` | String | Absolute AlternativeTo URL of the tool. |
+
+---
+
+## Usage Examples
+
+### Basic Keyword Search
+Extract tools related to a specific keyword from the search results.
 
 ```json
 {
-  "startUrls": [{ "url": "https://alternativeto.net/category/ai-tools/ai-image-generator/" }],
-  "results_wanted": 50,
-  "max_pages": 10,
-  "collectDetails": true,
-  "proxyConfiguration": { "useApifyProxy": true, "apifyProxyGroups": ["RESIDENTIAL"] }
+  "keyword": "Photoshop alternatives",
+  "results_wanted": 50
 }
 ```
 
-## Output
+### Category Extraction
+Collect tools from a specific category URL.
 
-Items are stored in the default dataset (view `overview`):
+```json
+{
+  "startUrls": [
+    { "url": "https://alternativeto.net/category/ai-tools/ai-image-generator/" }
+  ],
+  "collectDetails": true,
+  "results_wanted": 100
+}
+```
 
-- `title` (string|null) — Tool name.
-- `description` (string|null) — Cleaned description from detail page or metadata.
-- `category` (string|null) — First detected category/breadcrumb.
-- `rating` (number|null) — Parsed rating when available.
-- `pricing` (string|null) — License/pricing text when available.
-- `url` (string) — Absolute AlternativeTo URL.
-- `_source` (string|null) — Present for list-only mode items.
+### Large Scale Collection
+Gather a large number of results across multiple pages with residential proxies.
 
-Example item:
+```json
+{
+  "keyword": "Notion alternatives",
+  "results_wanted": 500,
+  "max_pages": 50,
+  "proxyConfiguration": {
+    "useApifyProxy": true,
+    "apifyProxyGroups": ["RESIDENTIAL"]
+  }
+}
+```
+
+---
+
+## Sample Output
 
 ```json
 {
   "title": "Midjourney",
-  "description": "AI-powered image generation service...",
+  "description": "Midjourney is an independent research lab exploring new mediums of thought and expanding the imaginative powers of the human species. Their AI tool generates high-quality images from text descriptions.",
   "category": "AI Image Generator",
-  "rating": 4.5,
-  "pricing": "Freemium",
+  "rating": 4.8,
+  "pricing": "Paid",
   "url": "https://alternativeto.net/software/midjourney/"
 }
 ```
 
-## Running locally
+---
 
-```bash
-npm install
-apify run -p INPUT.json
-```
+## Tips for Best Results
 
-## Deployment
+### Use Residential Proxies
+To ensure consistent extraction and avoid being limited by website protections, always use Apify Residential Proxies.
 
-- Login once: `apify login`
-- Push to Apify: `apify push`
+### Targeted URLs
+For the most relevant data, provide direct category URLs rather than broad keywords. This ensures you capture all tools in a specific niche.
 
-## Notes
+### Balanced Collection
+For initial testing, start with a small `results_wanted` (e.g., 20) to verify you're getting the data you need before running large-scale extractions.
 
-- When no `keyword` or start URL is provided, the actor falls back to the AlternativeTo homepage and logs a warning.
-- If AlternativeTo.net markup changes, adjust selectors in `src/main.js`.
-- For reliable runs, prefer Apify residential proxies and keep `results_wanted`/`max_pages` reasonable to avoid rate limits.
+---
+
+## Integrations
+
+Connect your extracted AlternativeTo data with:
+
+- **Google Sheets** — Export directly for analysis and reporting
+- **Airtable** — Build searchable software databases
+- **Slack** — Get notifications for new software matches
+- **Webhooks** — Send data to your custom internal systems
+
+### Export Formats
+- **JSON** — Ready for developers and application integration
+- **CSV** — Optimized for spreadsheet and business analysis
+- **Excel** — Convenient for reporting and presentations
+
+---
+
+## Frequently Asked Questions
+
+### Can I scrape multiple categories at once?
+Yes, you can provide multiple URLs in the `startUrls` input array.
+
+### How do I collect only tool names and URLs?
+Set `collectDetails` to `false`. This will skip visiting individual tool pages and only collect data available on the list pages.
+
+### Does it handle pagination?
+Yes, the scraper automatically identifies and follows the "Next" page links until your target result count is met.
+
+---
+
+## Support
+
+For issues or feature requests, please contact support through the Apify Console.
+
+---
+
+## Legal Notice
+
+This actor is designed for legitimate data collection purposes. Users are responsible for ensuring compliance with website terms of service and applicable laws. Use data responsibly and respect rate limits and community guidelines.
