@@ -129,8 +129,6 @@ const buildLaunchContext = (ua) => ({
     launcher: firefox,
     launchOptions: {
         headless: true,
-        serviceWorkers: 'block', // Block service workers for performance
-        reduceMotion: 'reduce',
     },
     userAgent: ua,
 });
@@ -177,7 +175,6 @@ await Actor.main(async () => {
                     devices: ['desktop'],
                 },
             },
-            retireInstanceAfterRequestCount: 10,
         },
         preNavigationHooks: [
             async ({ page }) => {
