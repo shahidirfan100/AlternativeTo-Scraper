@@ -220,14 +220,14 @@ const randomDelay = (min = 150, max = 450) =>
 
 const getRandomUA = () => USER_AGENTS[Math.floor(Math.random() * USER_AGENTS.length)];
 
-const fetchListPage = async (url, proxyConfiguration, attempt = 1) => {
+const fetchListPage = async (url, proxyConfiguration, ua, attempt = 1) => {
     const proxyUrl = proxyConfiguration ? await proxyConfiguration.newUrl() : undefined;
     const response = await gotScraping({
         url,
         proxyUrl,
         timeout: { request: 30000 },
         headers: {
-            'user-agent': getRandomUA(),
+            'user-agent': ua || getRandomUA(),
             accept: 'text/html,application/xhtml+xml,application/xml;q=0.9,image/webp,*/*;q=0.8',
             'accept-language': 'en-US,en;q=0.9',
         },
@@ -238,19 +238,19 @@ const fetchListPage = async (url, proxyConfiguration, attempt = 1) => {
     if (html.includes('Just a moment') && html.includes('cloudflare')) {
         if (attempt >= 3) throw new Error('Cloudflare challenge detected on list page (after retries)');
         await randomDelay(400, 800);
-        return fetchListPage(url, proxyConfiguration, attempt + 1);
+        return fetchListPage(url, proxyConfiguration, ua, attempt + 1);
     }
     return cheerioLoad(html);
 };
 
-const fetchDetailPage = async (url, proxyConfiguration, attempt = 1) => {
+const fetchDetailPage = async (url, proxyConfiguration, ua, attempt = 1) => {
     const proxyUrl = proxyConfiguration ? await proxyConfiguration.newUrl() : undefined;
     const response = await gotScraping({
         url,
         proxyUrl,
         timeout: { request: 35000 },
         headers: {
-            'user-agent': getRandomUA(),
+            'user-agent': ua || getRandomUA(),
             accept: 'text/html,application/xhtml+xml,application/xml;q=0.9,image/webp,*/*;q=0.8',
             'accept-language': 'en-US,en;q=0.9',
             referer: BASE_URL,
@@ -262,7 +262,7 @@ const fetchDetailPage = async (url, proxyConfiguration, attempt = 1) => {
     if (html.includes('Just a moment') && html.includes('cloudflare')) {
         if (attempt >= 3) throw new Error('Cloudflare challenge detected on detail page (after retries)');
         await randomDelay(400, 800);
-        return fetchDetailPage(url, proxyConfiguration, attempt + 1);
+        return fetchDetailPage(url, proxyConfiguration, ua, attempt + 1);
     }
     return cheerioLoad(html);
 };
@@ -303,7 +303,6 @@ await Actor.main(async () => {
         navigationTimeoutSecs: 30,
         launchContext: {
             useChrome: true,
-            stealth: true,
             launchOptions: {
                 args: [
                     '--disable-blink-features=AutomationControlled',
@@ -311,13 +310,6 @@ await Actor.main(async () => {
                     '--use-gl=swiftshader',
                     '--enable-accelerated-2d-canvas',
                 ],
-            },
-            contextOptions: {
-                userAgent: runUserAgent,
-                viewport: { width: 1366, height: 768 },
-                deviceScaleFactor: 1,
-                locale: 'en-US',
-                timezoneId: 'America/New_York',
             },
         },
         browserPoolOptions: {
@@ -332,7 +324,9 @@ await Actor.main(async () => {
         },
         preNavigationHooks: [
             async ({ page }) => {
+                await page.setViewportSize({ width: 1366, height: 768 });
                 await page.context().setExtraHTTPHeaders({
+                    'user-agent': runUserAgent,
                     'accept-language': 'en-US,en;q=0.9',
                     'upgrade-insecure-requests': '1',
                     referer: BASE_URL,
@@ -347,13 +341,14 @@ await Actor.main(async () => {
                     return route.continue();
                 });
 
-                await page.addInitScript(() => {
+                await page.addInitScript(({ ua }) => {
                     Object.defineProperty(navigator, 'webdriver', { get: () => false });
                     window.chrome = { runtime: {} };
                     Object.defineProperty(navigator, 'languages', { get: () => ['en-US', 'en'] });
                     Object.defineProperty(navigator, 'plugins', { get: () => [1, 2, 3, 4, 5] });
                     Object.defineProperty(navigator, 'deviceMemory', { get: () => 8 });
-                });
+                    Object.defineProperty(navigator, 'userAgent', { get: () => ua });
+                }, { ua: runUserAgent });
             },
         ],
         async requestHandler({ page, request, crawler: crawlerInstance }) {
@@ -464,7 +459,7 @@ await Actor.main(async () => {
             await Promise.all(batch.map(async (toolPreview) => {
                 if (saved >= resultsWanted) return;
                 try {
-                    const $detail = await fetchDetailPage(toolPreview.url, proxyConfig);
+                    const $detail = await fetchDetailPage(toolPreview.url, proxyConfig, runUserAgent);
                     const item = extractDetailItem($detail, toolPreview.url);
                     const mergedPlatforms = uniqueStrings([
                         ...(Array.isArray(item.platforms) ? item.platforms : []),
