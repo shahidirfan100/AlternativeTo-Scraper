@@ -19,8 +19,7 @@
       "title": "Search Keyword (if not using Start URL)",
       "type": "string",
       "description": "Search keyword on AlternativeTo. Examples: 'DALL-E', 'Midjourney', 'AI image generator'.",
-      "editor": "textfield",
-      "prefill": "AI image generator"
+      "editor": "textfield"
     },
     "collectDetails": {
       "title": "Collect tool details",

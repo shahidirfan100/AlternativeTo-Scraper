@@ -1,7 +1,6 @@
 import { Actor, log } from 'apify';
 import { PlaywrightCrawler } from 'crawlee';
 import { load as cheerioLoad } from 'cheerio';
-import { gotScraping } from 'got-scraping';
 
 const BASE_URL = 'https://alternativeto.net/';
 const PLATFORM_REGEX = /(windows|mac|macos|linux|android|ios|ipad|online|web|self-hosted|saas|chrome|firefox|edge|safari)/i;
@@ -10,6 +9,9 @@ const USER_AGENTS = [
     'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/121.0.0.0 Safari/537.36',
     'Mozilla/5.0 (Macintosh; Intel Mac OS X 13_6) AppleWebKit/605.1.15 (KHTML, like Gecko) Version/17.2 Safari/605.1.15',
     'Mozilla/5.0 (Windows NT 10.0; Win64; x64; rv:120.0) Gecko/20100101 Firefox/120.0',
+];
+const DEFAULT_START_URLS = [
+    'https://alternativeto.net/category/ai-tools/ai-image-generator/',
 ];
 
 const toAbsoluteUrl = (href, base = BASE_URL) => {
@@ -49,6 +51,16 @@ const normalizeInput = (rawInput) => {
     const resultsWanted = parsePositiveInteger(rawInput.results_wanted, 50, 'results_wanted');
     const maxPages = parsePositiveInteger(rawInput.max_pages, 5, 'max_pages');
 
+    const isDefaultStartUrls = Array.isArray(rawInput.startUrls)
+        && rawInput.startUrls.length === DEFAULT_START_URLS.length
+        && rawInput.startUrls.every((entry, idx) => {
+            const url = typeof entry === 'string' ? entry : entry?.url;
+            return normalizeText(url) === DEFAULT_START_URLS[idx];
+        });
+    const hasExplicitSingle = Boolean(normalizeText(rawInput.startUrl) || normalizeText(rawInput.url));
+    const hasExplicitList = Array.isArray(rawInput.startUrls) && rawInput.startUrls.length > 0 && !isDefaultStartUrls;
+    const shouldUseStartUrls = hasExplicitSingle || hasExplicitList;
+
     const sources = [];
     const addSource = (val) => {
         if (!val) return;
@@ -61,15 +73,19 @@ const normalizeInput = (rawInput) => {
         }
     };
 
-    addSource(rawInput.startUrl);
-    addSource(rawInput.url);
-    if (Array.isArray(rawInput.startUrls)) rawInput.startUrls.forEach(addSource);
+    if (shouldUseStartUrls) {
+        addSource(rawInput.startUrl);
+        addSource(rawInput.url);
+        if (Array.isArray(rawInput.startUrls)) rawInput.startUrls.forEach(addSource);
+    } else if (!keyword) {
+        DEFAULT_START_URLS.forEach(addSource);
+    }
 
     const normalizedStartUrls = [...new Set(sources.map((href) => toAbsoluteUrl(href)).filter(Boolean))];
     if (!normalizedStartUrls.length) {
-        const fallbackUrl = buildSearchUrl(keyword);
+        const fallbackUrl = keyword ? buildSearchUrl(keyword) : DEFAULT_START_URLS[0];
         normalizedStartUrls.push(fallbackUrl);
-        if (!keyword) log.warning('No startUrl/startUrls/url provided. Falling back to AlternativeTo homepage.');
+        if (!keyword) log.warning('No startUrl/startUrls/url provided. Falling back to default category URL.');
     }
 
     return {
@@ -220,58 +236,30 @@ const randomDelay = (min = 150, max = 450) =>
 
 const getRandomUA = () => USER_AGENTS[Math.floor(Math.random() * USER_AGENTS.length)];
 
-const fetchListPage = async (url, proxyConfiguration, ua, attempt = 1) => {
-    const proxyUrl = proxyConfiguration ? await proxyConfiguration.newUrl() : undefined;
-    const response = await gotScraping({
-        url,
-        proxyUrl,
-        timeout: { request: 30000 },
-        headers: {
-            'user-agent': ua || getRandomUA(),
-            accept: 'text/html,application/xhtml+xml,application/xml;q=0.9,image/webp,*/*;q=0.8',
-            'accept-language': 'en-US,en;q=0.9',
-        },
-        http2: true,
-    });
-
-    const html = response.body;
-    if (html.includes('Just a moment') && html.includes('cloudflare')) {
-        if (attempt >= 3) throw new Error('Cloudflare challenge detected on list page (after retries)');
-        await randomDelay(400, 800);
-        return fetchListPage(url, proxyConfiguration, ua, attempt + 1);
-    }
-    return cheerioLoad(html);
-};
-
-const fetchDetailPage = async (url, proxyConfiguration, ua, attempt = 1) => {
-    const proxyUrl = proxyConfiguration ? await proxyConfiguration.newUrl() : undefined;
-    const response = await gotScraping({
-        url,
-        proxyUrl,
-        timeout: { request: 35000 },
-        headers: {
-            'user-agent': ua || getRandomUA(),
-            accept: 'text/html,application/xhtml+xml,application/xml;q=0.9,image/webp,*/*;q=0.8',
-            'accept-language': 'en-US,en;q=0.9',
-            referer: BASE_URL,
-        },
-        http2: true,
-    });
-
-    const html = response.body;
-    if (html.includes('Just a moment') && html.includes('cloudflare')) {
-        if (attempt >= 3) throw new Error('Cloudflare challenge detected on detail page (after retries)');
-        await randomDelay(400, 800);
-        return fetchDetailPage(url, proxyConfiguration, ua, attempt + 1);
-    }
-    return cheerioLoad(html);
-};
+const buildLaunchContext = (ua) => ({
+    useChrome: true,
+    launchOptions: {
+        args: [
+            '--disable-blink-features=AutomationControlled',
+            '--enable-webgl',
+            '--use-gl=swiftshader',
+            '--enable-accelerated-2d-canvas',
+        ],
+    },
+    contextOptions: {
+        userAgent: ua,
+        viewport: { width: 1366, height: 768 },
+        deviceScaleFactor: 1,
+        locale: 'en-US',
+        timezoneId: 'America/New_York',
+    },
+});
 
 await Actor.main(async () => {
     const rawInput = (await Actor.getInput()) ?? {};
     const { keyword, collectDetails, resultsWanted, maxPages, startUrls, proxyConfiguration } = normalizeInput(rawInput);
 
-    log.info('Starting AlternativeTo hybrid scraper', {
+    log.info('Starting AlternativeTo Playwright-only scraper', {
         keyword: keyword || null,
         collectDetails,
         resultsWanted,
@@ -299,19 +287,9 @@ await Actor.main(async () => {
             sessionOptions: { maxUsageCount: 4 },
         },
         maxConcurrency: 2,
-        requestHandlerTimeoutSecs: 60,
-        navigationTimeoutSecs: 30,
-        launchContext: {
-            useChrome: true,
-            launchOptions: {
-                args: [
-                    '--disable-blink-features=AutomationControlled',
-                    '--enable-webgl',
-                    '--use-gl=swiftshader',
-                    '--enable-accelerated-2d-canvas',
-                ],
-            },
-        },
+        requestHandlerTimeoutSecs: 90,
+        navigationTimeoutSecs: 45,
+        launchContext: buildLaunchContext(runUserAgent),
         browserPoolOptions: {
             useFingerprints: true,
             fingerprintOptions: {
@@ -324,7 +302,6 @@ await Actor.main(async () => {
         },
         preNavigationHooks: [
             async ({ page }) => {
-                await page.setViewportSize({ width: 1366, height: 768 });
                 await page.context().setExtraHTTPHeaders({
                     'user-agent': runUserAgent,
                     'accept-language': 'en-US,en;q=0.9',
@@ -419,7 +396,10 @@ await Actor.main(async () => {
                 if (collectDetails) {
                     if (!seenDetails.has(tool.url)) {
                         seenDetails.add(tool.url);
-                        detailRequests.push(tool);
+                        detailRequests.push({
+                            url: tool.url,
+                            userData: { toolPreview: tool },
+                        });
                     }
                 } else if (!seenDetails.has(tool.url)) {
                     seenDetails.add(tool.url);
@@ -453,14 +433,76 @@ await Actor.main(async () => {
     await listCrawler.run(startRequests);
 
     if (collectDetails && detailRequests.length && saved < resultsWanted) {
-        log.info(`Fetching detail pages via HTTP (got-scraping). Pending: ${detailRequests.length}`);
-        for (let i = 0; i < detailRequests.length && saved < resultsWanted; i += DETAIL_CONCURRENCY) {
-            const batch = detailRequests.slice(i, i + DETAIL_CONCURRENCY);
-            await Promise.all(batch.map(async (toolPreview) => {
+        log.info(`Processing detail pages via Playwright. Pending: ${detailRequests.length}`);
+        const detailCrawler = new PlaywrightCrawler({
+            proxyConfiguration: proxyConfig,
+            maxRequestRetries: 3,
+            useSessionPool: true,
+            sessionPoolOptions: {
+                maxPoolSize: 8,
+                sessionOptions: { maxUsageCount: 4 },
+            },
+            maxConcurrency: DETAIL_CONCURRENCY,
+            requestHandlerTimeoutSecs: 120,
+            navigationTimeoutSecs: 60,
+            launchContext: buildLaunchContext(runUserAgent),
+            browserPoolOptions: {
+                useFingerprints: true,
+                fingerprintOptions: {
+                    fingerprintGeneratorOptions: {
+                        browsers: ['chrome'],
+                        operatingSystems: ['windows', 'macos'],
+                        devices: ['desktop'],
+                    },
+                },
+            },
+            preNavigationHooks: [
+                async ({ page }) => {
+                    await page.context().setExtraHTTPHeaders({
+                        'user-agent': runUserAgent,
+                        'accept-language': 'en-US,en;q=0.9',
+                        'upgrade-insecure-requests': '1',
+                        referer: BASE_URL,
+                    });
+                    await page.route('**/*', (route) => {
+                        const type = route.request().resourceType();
+                        const url = route.request().url();
+                        if (['image', 'font', 'media'].includes(type) ||
+                            /googletagmanager|google-analytics|facebook|doubleclick|pinterest|adsense/.test(url)) {
+                            return route.abort();
+                        }
+                        return route.continue();
+                    });
+
+                    await page.addInitScript(({ ua }) => {
+                        Object.defineProperty(navigator, 'webdriver', { get: () => false });
+                        window.chrome = { runtime: {} };
+                        Object.defineProperty(navigator, 'languages', { get: () => ['en-US', 'en'] });
+                        Object.defineProperty(navigator, 'plugins', { get: () => [1, 2, 3, 4, 5] });
+                        Object.defineProperty(navigator, 'deviceMemory', { get: () => 8 });
+                        Object.defineProperty(navigator, 'userAgent', { get: () => ua });
+                    }, { ua: runUserAgent });
+                },
+            ],
+            async requestHandler({ page, request, crawler: crawlerInstance }) {
                 if (saved >= resultsWanted) return;
+                const currentUrl = request.url;
+                const toolPreview = request.userData.toolPreview || {};
+
+                log.info(`Processing DETAIL via Playwright: ${currentUrl}`);
+                await page.goto(currentUrl, { waitUntil: 'domcontentloaded', timeout: 60000 });
+                await randomDelay(250, 600);
+
+                if (await page.title().then((t) => t.includes('Just a moment'))) {
+                    log.info('Cloudflare challenge on detail, waiting briefly...');
+                    await page.waitForTimeout(3000);
+                }
+
+                const content = await page.content();
+                const $ = cheerioLoad(content);
+
                 try {
-                    const $detail = await fetchDetailPage(toolPreview.url, proxyConfig, runUserAgent);
-                    const item = extractDetailItem($detail, toolPreview.url);
+                    const item = extractDetailItem($, currentUrl);
                     const mergedPlatforms = uniqueStrings([
                         ...(Array.isArray(item.platforms) ? item.platforms : []),
                         ...(Array.isArray(toolPreview.platforms) ? toolPreview.platforms : []),
@@ -478,21 +520,30 @@ await Actor.main(async () => {
                         logoUrl: item.logoUrl || toolPreview.logoUrl || null,
                         platforms: mergedPlatforms.length ? mergedPlatforms : null,
                         developer: item.developer || toolPreview.developer || null,
-                        url: toolPreview.url.split('#')[0],
+                        url: currentUrl.split('#')[0],
                     };
 
                     await Actor.pushData(finalItem);
                     saved++;
                     log.info(`Saved item ${saved}/${resultsWanted}: ${finalItem.title}`);
-                } catch (err) {
-                    log.warning(`Detail fetch failed for ${toolPreview.url}: ${err.message}`);
-                    await Actor.pushData({ ...toolPreview, _source: 'alternativeto' });
-                    saved++;
-                } finally {
-                    await randomDelay(120, 320);
+
+                    if (saved >= resultsWanted) {
+                        await crawlerInstance.autoscaledPool?.abort();
+                    }
+                } catch (error) {
+                    log.error(`Failed to extract detail for ${currentUrl}: ${error.message}`);
+                    if (toolPreview.title) {
+                        await Actor.pushData({ ...toolPreview, _source: 'alternativeto' });
+                        saved++;
+                    }
                 }
-            }));
-        }
+            },
+            failedRequestHandler({ request, error }) {
+                log.error(`Detail request ${request.url} failed: ${error.message}`);
+            },
+        });
+
+        await detailCrawler.run(detailRequests);
     }
 
     log.info(`Scraping finished. Total items saved: ${saved}`);
