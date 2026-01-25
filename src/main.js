@@ -36,6 +36,27 @@ const parseFirstFloat = (value) => {
     return match ? parseFloat(match[1]) : null;
 };
 
+const extractLabeledValue = ($container, labelRegex) => {
+    let value = null;
+    $container.find('*').each((_, el) => {
+        if (value) return;
+        const text = normalizeText($(el).text());
+        if (!labelRegex.test(text)) return;
+
+        const linkText = normalizeText($(el).find('a').first().text());
+        if (linkText) {
+            value = linkText;
+            return;
+        }
+
+        const afterColon = text.split(':').slice(1).join(':').trim();
+        if (afterColon) {
+            value = afterColon;
+        }
+    });
+    return value;
+};
+
 const buildSearchUrl = (keyword) => {
     const url = new URL(BASE_URL);
     if (keyword) url.searchParams.set('q', keyword);
@@ -227,7 +248,10 @@ const crawler = new PlaywrightCrawler({
             const appTypes = extractTagsByHeader($card, 'Application Types');
             const platforms = extractTagsByHeader($card, 'Platforms');
             const origins = extractTagsByHeader($card, 'Made in');
-            const bestAlternativeText = normalizeText($card.find('.text-meta').first().text());
+            const originLabelValue = extractLabeledValue($card, /(origin|made in)/i);
+
+            const bestAlternativeText = extractLabeledValue($card, /best\\s*alternative/i)
+                || normalizeText($card.find('.text-meta, .text-secondary, [class*="text-slate"]').filter((_, el) => /alternative/i.test(normalizeText($(el).text()))).first().text());
 
             const images = [];
             $card.find('div[aria-label="Open image in lightbox"] img').each((_, img) => {
@@ -248,6 +272,10 @@ const crawler = new PlaywrightCrawler({
                 const directText = normalizeText(ratingContainer.text());
                 if (directText) ratingCandidates.push(directText);
             }
+            $card.find('span.text-lime-600, span[class*="text-lime"], span[class*="text-success"]').each((_, span) => {
+                const txt = normalizeText($(span).text());
+                if (txt) ratingCandidates.push(txt);
+            });
             const ratingParsed = ratingCandidates.map(parseFirstFloat).find((val) => Number.isFinite(val)) ?? null;
 
             tools.push({
@@ -262,7 +290,7 @@ const crawler = new PlaywrightCrawler({
                 pricing: cost || null,
                 applicationTypes: appTypes.length ? appTypes : null,
                 platforms: platforms.length ? platforms : null,
-                origins: origins.length ? origins : null,
+                origins: origins.length ? origins : (originLabelValue ? [originLabelValue] : null),
                 bestAlternative: bestAlternativeText || null,
                 images: images.length ? images : null,
                 _source: 'alternativeto',
@@ -287,6 +315,7 @@ const crawler = new PlaywrightCrawler({
                     'nav[aria-label*="pagination" i] a[aria-label*="next" i]',
                     'nav[aria-label*="pagination" i] a:contains("Next")',
                     'a[aria-label*="next" i]',
+                    'a.inline-block.px-2.py-2.font-medium.leading-none.text-blue-600.dark\\:text-blue-400.cursor-pointer.text-\\[1\\.1em\\].ml-4',
                 ];
                 for (const selector of selectors) {
                     const href = $(selector).first().attr('href');
@@ -303,7 +332,15 @@ const crawler = new PlaywrightCrawler({
                     if (href) return href;
                 }
 
-                return null;
+                // Fallback: build ?p=<n+1> URL when no link is present
+                try {
+                    const urlObj = new URL(currentUrl);
+                    const currentPageParam = parseInt(urlObj.searchParams.get('p') || '1', 10);
+                    urlObj.searchParams.set('p', String(currentPageParam + 1));
+                    return urlObj.href;
+                } catch {
+                    return null;
+                }
             })();
 
             const nextUrl = nextHref ? toAbsoluteUrl(nextHref, currentUrl) : null;
