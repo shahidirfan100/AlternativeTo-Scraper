@@ -6,6 +6,11 @@ import { gotScraping } from 'got-scraping';
 const BASE_URL = 'https://alternativeto.net/';
 const PLATFORM_REGEX = /(windows|mac|macos|linux|android|ios|ipad|online|web|self-hosted|saas|chrome|firefox|edge|safari)/i;
 const LICENSE_REGEX = /(free|open\s*source|opensource|paid|freemium|proprietary|commercial|trial|subscription|one[-\s]?time)/i;
+const USER_AGENTS = [
+    'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/121.0.0.0 Safari/537.36',
+    'Mozilla/5.0 (Macintosh; Intel Mac OS X 13_6) AppleWebKit/605.1.15 (KHTML, like Gecko) Version/17.2 Safari/605.1.15',
+    'Mozilla/5.0 (Windows NT 10.0; Win64; x64; rv:120.0) Gecko/20100101 Firefox/120.0',
+];
 
 const toAbsoluteUrl = (href, base = BASE_URL) => {
     try {
@@ -77,12 +82,19 @@ const normalizeInput = (rawInput) => {
     };
 };
 
-const extractRating = ($) => {
+const extractRating = ($, softwareLd = {}) => {
     const ratingCandidate = $('[itemprop="ratingValue"]').attr('content')
         || $('[data-rating]').attr('data-rating')
         || $('[class*="rating"], [class*="stars"]').first().text();
     const parsed = parseFloat(normalizeText(ratingCandidate));
-    return Number.isFinite(parsed) ? parsed : null;
+    if (Number.isFinite(parsed)) return parsed;
+    const ldRating = parseFloat(
+        softwareLd.aggregateRating?.ratingValue
+        || softwareLd.aggregateRating?.rating
+        || softwareLd.ratingValue
+        || softwareLd.rating,
+    );
+    return Number.isFinite(ldRating) ? ldRating : null;
 };
 
 const parseJsonLd = ($) => {
@@ -99,6 +111,16 @@ const parseJsonLd = ($) => {
         }
     });
     return blocks;
+};
+
+const extractFieldByLabel = ($, label) => {
+    const matcher = (i, el) => normalizeText($(el).text()).toLowerCase().startsWith(label.toLowerCase());
+    const $labelEl = $('div, span, p, li, dt').filter(matcher).first();
+    if ($labelEl.length) {
+        const candidate = $labelEl.next().text() || $labelEl.parent().text();
+        return normalizeText(candidate);
+    }
+    return null;
 };
 
 const extractDetailItem = ($, requestUrl) => {
@@ -133,10 +155,12 @@ const extractDetailItem = ($, requestUrl) => {
     const pricing = normalizeText(
         $('[class*="license"], [class*="pricing"], .license-type, .price').first().text()
         || softwareLd.offers?.price
-        || softwareLd.offers?.priceCurrency,
+        || softwareLd.offers?.priceCurrency
+        || extractFieldByLabel($, 'pricing')
+        || extractFieldByLabel($, 'price'),
     ) || null;
 
-    const rating = extractRating($);
+    const rating = extractRating($, softwareLd);
 
     const developer = normalizeText(
         $('[itemprop="publisher"] [itemprop="name"]').text()
@@ -162,13 +186,15 @@ const extractDetailItem = ($, requestUrl) => {
         ...$('a[href*="/platform/"]').map((_, el) => normalizeText($(el).text())).get(),
         ...(Array.isArray(softwareLd.operatingSystem) ? softwareLd.operatingSystem : [softwareLd.operatingSystem]),
         ...tagTexts.filter((text) => PLATFORM_REGEX.test(text)),
+        extractFieldByLabel($, 'platforms'),
     ]);
 
     const license = normalizeText(
         tagTexts.find((text) => LICENSE_REGEX.test(text))
         || softwareLd.license
         || softwareLd.offers?.license
-        || $('[class*="license"]').first().text(),
+        || $('[class*="license"]').first().text()
+        || extractFieldByLabel($, 'license'),
     ) || null;
 
     const likesText = $('[data-testid*="heart"] span, [class*="heart"] span, [class*="likes"] span').first().text();
@@ -189,25 +215,30 @@ const extractDetailItem = ($, requestUrl) => {
     };
 };
 
-const randomDelay = (min = 200, max = 700) =>
+const randomDelay = (min = 150, max = 450) =>
     new Promise((r) => setTimeout(r, min + Math.random() * (max - min)));
 
-const fetchListPage = async (url, proxyConfiguration) => {
+const getRandomUA = () => USER_AGENTS[Math.floor(Math.random() * USER_AGENTS.length)];
+
+const fetchListPage = async (url, proxyConfiguration, attempt = 1) => {
     const proxyUrl = proxyConfiguration ? await proxyConfiguration.newUrl() : undefined;
     const response = await gotScraping({
         url,
         proxyUrl,
         timeout: { request: 30000 },
         headers: {
-            'user-agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36',
+            'user-agent': getRandomUA(),
             accept: 'text/html,application/xhtml+xml,application/xml;q=0.9,image/webp,*/*;q=0.8',
             'accept-language': 'en-US,en;q=0.9',
         },
+        http2: true,
     });
 
     const html = response.body;
     if (html.includes('Just a moment') && html.includes('cloudflare')) {
-        throw new Error('Cloudflare challenge detected on list page');
+        if (attempt >= 3) throw new Error('Cloudflare challenge detected on list page (after retries)');
+        await randomDelay(400, 800);
+        return fetchListPage(url, proxyConfiguration, attempt + 1);
     }
     return cheerioLoad(html);
 };
@@ -242,9 +273,14 @@ await Actor.main(async () => {
             maxPoolSize: 6,
             sessionOptions: { maxUsageCount: 3 },
         },
-        maxConcurrency: 2,
-        requestHandlerTimeoutSecs: 90,
-        navigationTimeoutSecs: 45,
+        maxConcurrency: 5,
+        requestHandlerTimeoutSecs: 75,
+        navigationTimeoutSecs: 35,
+        autoscaledPoolOptions: {
+            desiredConcurrency: 5,
+            maxConcurrency: 5,
+            minConcurrency: 2,
+        },
         browserPoolOptions: {
             useFingerprints: true,
             fingerprintOptions: {
@@ -257,6 +293,12 @@ await Actor.main(async () => {
         },
         preNavigationHooks: [
             async ({ page }) => {
+                await page.setViewportSize({ width: 1366, height: 768 });
+                await page.setExtraHTTPHeaders({
+                    'accept-language': 'en-US,en;q=0.9',
+                    'upgrade-insecure-requests': '1',
+                });
+                await page.setUserAgent(getRandomUA());
                 await page.route('**/*', (route) => {
                     const type = route.request().resourceType();
                     const url = route.request().url();
@@ -375,6 +417,8 @@ await Actor.main(async () => {
             );
             const likesRaw = $card.find('[class*="heart"] span, .ModernLikeButton-module-scss-module__xuujAq__heart span').text();
             const likesParsed = parseInt(likesRaw.replace(/[^0-9]/g, ''), 10);
+            const ratingRaw = $card.find('[itemprop="ratingValue"], [data-rating], [class*="rating"]').first().text();
+            const ratingParsed = parseFloat(normalizeText(ratingRaw));
 
             const tags = [];
             $card.find('.flex.flex-wrap.gap-2 span, .flex.flex-wrap.gap-2 a').each((i, tag) => {
@@ -391,6 +435,7 @@ await Actor.main(async () => {
                 description,
                 logoUrl,
                 likes: Number.isFinite(likesParsed) ? likesParsed : null,
+                rating: Number.isFinite(ratingParsed) ? ratingParsed : null,
                 platforms,
                 license,
                 pricing,
