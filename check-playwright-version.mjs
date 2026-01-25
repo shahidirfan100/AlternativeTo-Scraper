@@ -8,7 +8,7 @@ try {
     const packageJsonContent = readFileSync('./package.json', 'utf-8');
 
     // Extract version from Dockerfile
-    const dockerMatch = dockerfileContent.match(/apify\/actor-node-playwright-chrome:\d+-(\d+\.\d+\.\d+)/);
+    const dockerMatch = dockerfileContent.match(/apify\/actor-node-playwright-(?:chrome|firefox):\d+-(\d+\.\d+\.\d+)/);
     const dockerVersion = dockerMatch ? dockerMatch[1] : null;
 
     // Extract version from package.json

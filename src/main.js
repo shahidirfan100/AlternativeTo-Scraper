@@ -1,14 +1,15 @@
 import { Actor, log } from 'apify';
 import { PlaywrightCrawler } from 'crawlee';
+import { firefox } from 'playwright';
 import { load as cheerioLoad } from 'cheerio';
 
 const BASE_URL = 'https://alternativeto.net/';
 const PLATFORM_REGEX = /(windows|mac|macos|linux|android|ios|ipad|online|web|self-hosted|saas|chrome|firefox|edge|safari)/i;
 const LICENSE_REGEX = /(free|open\s*source|opensource|paid|freemium|proprietary|commercial|trial|subscription|one[-\s]?time)/i;
 const USER_AGENTS = [
-    'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/121.0.0.0 Safari/537.36',
-    'Mozilla/5.0 (Macintosh; Intel Mac OS X 13_6) AppleWebKit/605.1.15 (KHTML, like Gecko) Version/17.2 Safari/605.1.15',
-    'Mozilla/5.0 (Windows NT 10.0; Win64; x64; rv:120.0) Gecko/20100101 Firefox/120.0',
+    'Mozilla/5.0 (Windows NT 10.0; Win64; x64; rv:147.0) Gecko/20100101 Firefox/147.0',
+    'Mozilla/5.0 (Macintosh; Intel Mac OS X 15.7; rv:147.0) Gecko/20100101 Firefox/147.0',
+    'Mozilla/5.0 (X11; Linux x86_64; rv:147.0) Gecko/20100101 Firefox/147.0',
 ];
 const DEFAULT_START_URLS = [
     'https://alternativeto.net/category/ai-tools/ai-image-generator/',
@@ -47,7 +48,7 @@ const parsePositiveInteger = (value, fallback, fieldName) => {
 
 const normalizeInput = (rawInput) => {
     const keyword = normalizeText(rawInput.keyword);
-    const collectDetails = rawInput.collectDetails !== false;
+    const collectDetails = rawInput.collectDetails === true; // Default to false to avoid Cloudflare on details
     const resultsWanted = parsePositiveInteger(rawInput.results_wanted, 50, 'results_wanted');
     const maxPages = parsePositiveInteger(rawInput.max_pages, 5, 'max_pages');
 
@@ -237,22 +238,11 @@ const randomDelay = (min = 150, max = 450) =>
 const getRandomUA = () => USER_AGENTS[Math.floor(Math.random() * USER_AGENTS.length)];
 
 const buildLaunchContext = (ua) => ({
-    useChrome: true,
+    launcher: firefox,
     launchOptions: {
-        args: [
-            '--disable-blink-features=AutomationControlled',
-            '--enable-webgl',
-            '--use-gl=swiftshader',
-            '--enable-accelerated-2d-canvas',
-        ],
+        headless: true,
     },
-    contextOptions: {
-        userAgent: ua,
-        viewport: { width: 1366, height: 768 },
-        deviceScaleFactor: 1,
-        locale: 'en-US',
-        timezoneId: 'America/New_York',
-    },
+    userAgent: ua,
 });
 
 await Actor.main(async () => {
@@ -294,7 +284,7 @@ await Actor.main(async () => {
             useFingerprints: true,
             fingerprintOptions: {
                 fingerprintGeneratorOptions: {
-                    browsers: ['chrome'],
+                    browsers: ['firefox'],
                     operatingSystems: ['windows', 'macos'],
                     devices: ['desktop'],
                 },
@@ -311,8 +301,14 @@ await Actor.main(async () => {
                 await page.route('**/*', (route) => {
                     const type = route.request().resourceType();
                     const url = route.request().url();
-                    if (['image', 'font', 'media'].includes(type) ||
-                        /googletagmanager|google-analytics|facebook|doubleclick|pinterest|adsense/.test(url)) {
+                    // Block images, fonts, media, stylesheets, and common trackers
+                    if (['image', 'font', 'media', 'stylesheet'].includes(type) ||
+                        url.includes('google-analytics') ||
+                        url.includes('googletagmanager') ||
+                        url.includes('facebook') ||
+                        url.includes('doubleclick') ||
+                        url.includes('adsense') ||
+                        url.includes('pinterest')) {
                         return route.abort();
                     }
                     return route.continue();
@@ -360,15 +356,18 @@ await Actor.main(async () => {
                     $card.find('img[data-testid^="icon-"]').attr('src') || $card.find('img').first().attr('src'),
                     currentUrl,
                 );
-                const likesRaw = $card.find('[class*="heart"] span, .ModernLikeButton-module-scss-module__xuujAq__heart span').text();
-                const likesParsed = parseInt(likesRaw.replace(/[^0-9]/g, ''), 10);
-                const ratingRaw = $card.find('[itemprop="ratingValue"], [data-rating], [class*="rating"]').first().text();
-                const ratingParsed = parseFloat(normalizeText(ratingRaw));
-
                 const tags = [];
-                $card.find('.flex.flex-wrap.gap-2 span, .flex.flex-wrap.gap-2 a').each((i, tag) => {
+                $card.find('.flex.flex-wrap[class*="gap-"] span, .flex.flex-wrap[class*="gap-"] a').each((i, tag) => {
                     tags.push(normalizeText($(tag).text()));
                 });
+
+                const likesRaw = $card.find('[class*="heart"] span, .ModernLikeButton-module-scss-module__xuujAq__heart span').text();
+                const likesParsed = parseInt(likesRaw.replace(/[^0-9]/g, ''), 10);
+
+                // Ratings are often in a specific div on list view now
+                const ratingRaw = $card.find('div.relative.flex-shrink-0').text()
+                    || $card.find('[itemprop="ratingValue"], [data-rating], [class*="rating"]').first().text();
+                const ratingParsed = parseFloat(normalizeText(ratingRaw));
 
                 const platforms = uniqueStrings(tags.filter((t) => PLATFORM_REGEX.test(t)));
                 const license = tags.find((t) => LICENSE_REGEX.test(t)) || null;
@@ -450,7 +449,7 @@ await Actor.main(async () => {
                 useFingerprints: true,
                 fingerprintOptions: {
                     fingerprintGeneratorOptions: {
-                        browsers: ['chrome'],
+                        browsers: ['firefox'],
                         operatingSystems: ['windows', 'macos'],
                         devices: ['desktop'],
                     },
@@ -467,8 +466,14 @@ await Actor.main(async () => {
                     await page.route('**/*', (route) => {
                         const type = route.request().resourceType();
                         const url = route.request().url();
-                        if (['image', 'font', 'media'].includes(type) ||
-                            /googletagmanager|google-analytics|facebook|doubleclick|pinterest|adsense/.test(url)) {
+                        // Block images, fonts, media, stylesheets, and common trackers
+                        if (['image', 'font', 'media', 'stylesheet'].includes(type) ||
+                            url.includes('google-analytics') ||
+                            url.includes('googletagmanager') ||
+                            url.includes('facebook') ||
+                            url.includes('doubleclick') ||
+                            url.includes('adsense') ||
+                            url.includes('pinterest')) {
                             return route.abort();
                         }
                         return route.continue();

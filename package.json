@@ -7,7 +7,6 @@
     "apify": "^3.5.2",
     "crawlee": "^3.15.3",
     "cheerio": "^1.0.0-rc.12",
-    "got-scraping": "^4.1.2",
     "playwright": "1.56.1"
   },
   "scripts": {
@@ -17,7 +16,7 @@
     "lint": "eslint",
     "lint:fix": "eslint --fix",
     "test": "echo \"Error: oops, the Actor has no tests yet, sad!\" && exit 1",
-    "postinstall": "npx playwright install chromium"
+    "postinstall": "npx playwright install firefox"
   },
   "author": "Shahid Irfan",
   "license": "ISC"
