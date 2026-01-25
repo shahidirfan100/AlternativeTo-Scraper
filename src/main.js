@@ -46,9 +46,26 @@ const parsePositiveInteger = (value, fallback, fieldName) => {
     throw new Error(`Invalid ${fieldName} supplied. Provide a positive number.`);
 };
 
+// Helper to extract tags based on section header
+const evaluateText = (text) => (text ? String(text).replace(/\s+/g, ' ').trim() : '');
+
+const extractTagsByHeader = ($container, headerText) => {
+    const HEADER_REGEX = new RegExp(headerText, 'i');
+    const $header = $container.find('h4').filter((_, el) => HEADER_REGEX.test(evaluateText($(el).text())));
+    if (!$header.length) return [];
+
+    // The list is usually the next sibling UL or inside a div following the header
+    const $list = $header.next('ul, div').find('li, span, a');
+    const tags = [];
+    $list.each((_, el) => {
+        const txt = normalizeText($(el).text());
+        if (txt) tags.push(txt);
+    });
+    return [...new Set(tags)]; // Unique
+};
+
 const normalizeInput = (rawInput) => {
     const keyword = normalizeText(rawInput.keyword);
-    const collectDetails = rawInput.collectDetails === true; // Default to false to avoid Cloudflare on details
     const resultsWanted = parsePositiveInteger(rawInput.results_wanted, 50, 'results_wanted');
     const maxPages = parsePositiveInteger(rawInput.max_pages, 5, 'max_pages');
 
@@ -96,7 +113,6 @@ const normalizeInput = (rawInput) => {
 
     return {
         keyword,
-        collectDetails,
         resultsWanted,
         maxPages,
         startUrls: normalizedStartUrls,
@@ -104,140 +120,7 @@ const normalizeInput = (rawInput) => {
     };
 };
 
-const extractRating = ($, softwareLd = {}) => {
-    const ratingCandidate = $('[itemprop="ratingValue"]').attr('content')
-        || $('[data-rating]').attr('data-rating')
-        || $('[class*="rating"], [class*="stars"]').first().text();
-    const parsed = parseFloat(normalizeText(ratingCandidate));
-    if (Number.isFinite(parsed)) return parsed;
-    const ldRating = parseFloat(
-        softwareLd.aggregateRating?.ratingValue
-        || softwareLd.aggregateRating?.rating
-        || softwareLd.ratingValue
-        || softwareLd.rating,
-    );
-    return Number.isFinite(ldRating) ? ldRating : null;
-};
-
-const parseJsonLd = ($) => {
-    const blocks = [];
-    $('script[type="application/ld+json"]').each((_, el) => {
-        try {
-            const content = $(el).contents().text();
-            if (!content) return;
-            const parsed = JSON.parse(content);
-            if (Array.isArray(parsed)) blocks.push(...parsed);
-            else blocks.push(parsed);
-        } catch {
-            // ignore malformed JSON-LD
-        }
-    });
-    return blocks;
-};
-
-const extractFieldByLabel = ($, label) => {
-    const matcher = (i, el) => normalizeText($(el).text()).toLowerCase().startsWith(label.toLowerCase());
-    const $labelEl = $('div, span, p, li, dt').filter(matcher).first();
-    if ($labelEl.length) {
-        const candidate = $labelEl.next().text() || $labelEl.parent().text();
-        return normalizeText(candidate);
-    }
-    return null;
-};
-
-const extractDetailItem = ($, requestUrl) => {
-    const jsonLdBlocks = parseJsonLd($);
-    const softwareLd = jsonLdBlocks.find(
-        (obj) => obj && (obj['@type'] === 'SoftwareApplication' || obj['@type'] === 'Product'),
-    ) || {};
-
-    const title = normalizeText(
-        $('h1[itemprop="name"], h1.text-2xl, h1.title, .software-title, h1')
-            .first()
-            .text()
-        || $('meta[property="og:title"]').attr('content')
-        || softwareLd.name
-        || $('title').text(),
-    ) || null;
-
-    const descriptionHtml = $('.description, .software-description, [class*="description"]').first().html()
-        || $('meta[name="description"]').attr('content')
-        || $('[itemprop="description"]').html()
-        || softwareLd.description
-        || '';
-    const description = normalizeText(htmlToText(descriptionHtml)) || null;
-
-    const category = normalizeText(
-        $('a[href*="/category/"]').first().text()
-        || $('[class*="breadcrumb"] a').eq(1).text()
-        || $('.category').first().text()
-        || softwareLd.applicationCategory,
-    ) || null;
-
-    const pricing = normalizeText(
-        $('[class*="license"], [class*="pricing"], .license-type, .price').first().text()
-        || softwareLd.offers?.price
-        || softwareLd.offers?.priceCurrency
-        || extractFieldByLabel($, 'pricing')
-        || extractFieldByLabel($, 'price'),
-    ) || null;
-
-    const rating = extractRating($, softwareLd);
-
-    const developer = normalizeText(
-        $('[itemprop="publisher"] [itemprop="name"]').text()
-        || $('[data-testid="developer-link"]').text()
-        || $('a[href*="/developer/"]').first().text()
-        || softwareLd.publisher?.name
-        || softwareLd.manufacturer?.name,
-    ) || null;
-
-    const logoUrl = toAbsoluteUrl(
-        $('meta[property="og:image"]').attr('content')
-        || $('.software-icon img, img[data-testid^="icon-"]').first().attr('src')
-        || softwareLd.image,
-        requestUrl,
-    );
-
-    const tagTexts = [];
-    $('a[href*="/license/"], a[href*="/platform/"], .flex.flex-wrap.gap-2 a, .flex.flex-wrap.gap-2 span, [class*="badge"], [class*="tag"]').each((_, el) => {
-        tagTexts.push(normalizeText($(el).text()));
-    });
-
-    const platforms = uniqueStrings([
-        ...$('a[href*="/platform/"]').map((_, el) => normalizeText($(el).text())).get(),
-        ...(Array.isArray(softwareLd.operatingSystem) ? softwareLd.operatingSystem : [softwareLd.operatingSystem]),
-        ...tagTexts.filter((text) => PLATFORM_REGEX.test(text)),
-        extractFieldByLabel($, 'platforms'),
-    ]);
-
-    const license = normalizeText(
-        tagTexts.find((text) => LICENSE_REGEX.test(text))
-        || softwareLd.license
-        || softwareLd.offers?.license
-        || $('[class*="license"]').first().text()
-        || extractFieldByLabel($, 'license'),
-    ) || null;
-
-    const likesText = $('[data-testid*="heart"] span, [class*="heart"] span, [class*="likes"] span').first().text();
-    const likes = Number.parseInt(likesText.replace(/\D+/g, ''), 10);
-
-    return {
-        title,
-        description,
-        category,
-        rating,
-        pricing,
-        developer,
-        license,
-        platforms,
-        logoUrl,
-        likes: Number.isFinite(likes) ? likes : null,
-        url: requestUrl,
-    };
-};
-
-const randomDelay = (min = 150, max = 450) =>
+const randomDelay = (min = 100, max = 300) =>
     new Promise((r) => setTimeout(r, min + Math.random() * (max - min)));
 
 const getRandomUA = () => USER_AGENTS[Math.floor(Math.random() * USER_AGENTS.length)];
@@ -246,17 +129,18 @@ const buildLaunchContext = (ua) => ({
     launcher: firefox,
     launchOptions: {
         headless: true,
+        serviceWorkers: 'block', // Block service workers for performance
+        reduceMotion: 'reduce',
     },
     userAgent: ua,
 });
 
 await Actor.main(async () => {
     const rawInput = (await Actor.getInput()) ?? {};
-    const { keyword, collectDetails, resultsWanted, maxPages, startUrls, proxyConfiguration } = normalizeInput(rawInput);
+    const { keyword, resultsWanted, maxPages, startUrls, proxyConfiguration } = normalizeInput(rawInput);
 
     log.info('Starting AlternativeTo Playwright-only scraper', {
         keyword: keyword || null,
-        collectDetails,
         resultsWanted,
         maxPages,
     });
@@ -266,10 +150,8 @@ await Actor.main(async () => {
         apifyProxyGroups: ['RESIDENTIAL'],
     });
 
-    const DETAIL_CONCURRENCY = 5;
     const runUserAgent = getRandomUA();
     let saved = 0;
-    const detailRequests = [];
     const seenDetails = new Set();
     const seenPages = new Set();
 
@@ -281,6 +163,7 @@ await Actor.main(async () => {
             maxPoolSize: 8,
             sessionOptions: { maxUsageCount: 4 },
         },
+        minConcurrency: 1,
         maxConcurrency: 2,
         requestHandlerTimeoutSecs: 90,
         navigationTimeoutSecs: 45,
@@ -294,6 +177,7 @@ await Actor.main(async () => {
                     devices: ['desktop'],
                 },
             },
+            retireInstanceAfterRequestCount: 10,
         },
         preNavigationHooks: [
             async ({ page }) => {
@@ -347,46 +231,67 @@ await Actor.main(async () => {
             const $ = cheerioLoad(content);
 
             const tools = [];
-            // Broadened selector to catch cards on Category pages AND Product Alternative pages
-            // Product pages often list alternatives in a section, but the cards usually have data-testid="app-card"
-            // or are within a specific grid.
-            const $cards = $('div[data-testid="app-card"], li div[data-testid="app-card"], div.flex.flex-col.gap-3 > div');
 
-            $cards.each((_, el) => {
+            // Container Strategy: Find items with the specific structure (H2 + content)
+            // The browser check suggested: div[data-testid="app-listing-item"] OR divs with h2.Heading-module...
+            const $cards = $('div[data-testid="app-listing-item"], h2.Heading-module-scss-module__br2CUG__h2').closest('div[class*="rounded"]');
+            const $finalCards = $cards.length ? $cards : $('div.flex.flex-col.gap-3 > div');
+
+            $finalCards.each((_, el) => {
                 const $card = $(el);
-                const $titleLink = $card.find('h2 a, a.no-link-color').first();
+
+                // 1. Title
+                const $titleLink = $card.find('h2[class*="Heading-module"], h2 a, h2').first();
                 const title = normalizeText($titleLink.text());
-                const href = $titleLink.attr('href');
+                const href = $titleLink.find('a').attr('href') || $titleLink.attr('href') || $card.find('a[href*="/software/"]').first().attr('href');
                 const toolUrl = href ? toAbsoluteUrl(href, currentUrl) : null;
 
                 if (!toolUrl || !toolUrl.includes('/software/')) return;
 
+                // 2. Description
                 const description = normalizeText(
-                    $card.find('p').first().text()
-                    || $card.find('[class*="description"], [class*="Description"]').first().text()
-                    || $card.find('.text-gray-500, .text-base').first().text()
+                    $card.find('div.md_Compact p').first().text()
+                    || $card.find('#app-description p').first().text()
+                    || $card.find('p[class*="Description"], p').first().text()
                 );
+
+                // 3. Logo
                 const logoUrl = toAbsoluteUrl(
                     $card.find('img[data-testid^="icon-"]').attr('src') || $card.find('img').first().attr('src'),
                     currentUrl,
                 );
-                const tags = [];
-                $card.find('.flex.flex-wrap[class*="gap-"] span, .flex.flex-wrap[class*="gap-"] a, [class*="badge"], li').each((i, tag) => {
-                    tags.push(normalizeText($(tag).text()));
-                });
 
-                const likesRaw = $card.find('[class*="heart"] span, .ModernLikeButton-module-scss-module__xuujAq__heart span').text();
+                // 4. Likes
+                const likesRaw = $card.find('[aria-label^="Like"] span, [class*="heart"] span').text();
                 const likesParsed = parseInt(likesRaw.replace(/[^0-9]/g, ''), 10);
 
-                // Ratings are often in a specific div on list view now
-                // Robust Rating extraction
-                const ratingRaw = $card.find('div.relative.flex-shrink-0').text()
-                    || $card.find('[itemprop="ratingValue"], [data-rating], [class*="rating"], [class*="Score"]').first().text();
-                const ratingParsed = parseFloat(normalizeText(ratingRaw));
+                // 5. Cost & License (from "Cost / License" header)
+                const costLicenseTags = extractTagsByHeader($card, 'Cost / License') || [];
+                const cost = costLicenseTags[0] || null;
+                const license = costLicenseTags[1] || costLicenseTags.find(t => LICENSE_REGEX.test(t)) || null;
+                const pricing = cost || null;
 
-                const platforms = uniqueStrings(tags.filter((t) => PLATFORM_REGEX.test(t)));
-                const license = tags.find((t) => LICENSE_REGEX.test(t)) || null;
-                const pricing = license || null;
+                // 6. Application Types
+                const appTypes = extractTagsByHeader($card, 'Application Types');
+
+                // 7. Platforms
+                const platforms = extractTagsByHeader($card, 'Platforms');
+
+                // 8. Origins
+                const origins = extractTagsByHeader($card, 'Made in');
+
+                // 9. Best Alternative (text check)
+                const bestAlternativeText = normalizeText($card.find('.text-meta').first().text());
+
+                // 10. Images (screen capture thumbs)
+                const images = [];
+                $card.find('div[aria-label="Open image in lightbox"] img').each((_, img) => {
+                    images.push(toAbsoluteUrl($(img).attr('src'), currentUrl));
+                });
+
+                // 11. Rating (Often not present in list, check fallback)
+                const ratingRaw = $card.find('div.relative.flex-shrink-0').text();
+                const ratingParsed = parseFloat(normalizeText(ratingRaw));
 
                 tools.push({
                     title,
@@ -395,9 +300,14 @@ await Actor.main(async () => {
                     logoUrl,
                     likes: Number.isFinite(likesParsed) ? likesParsed : null,
                     rating: Number.isFinite(ratingParsed) ? ratingParsed : null,
-                    platforms,
+                    cost,
                     license,
                     pricing,
+                    applicationTypes: appTypes.length ? appTypes : null,
+                    platforms: platforms.length ? platforms : null,
+                    origins: origins.length ? origins : null,
+                    bestAlternative: bestAlternativeText || null,
+                    images: images.length ? images : null,
                     _source: 'alternativeto',
                 });
             });
@@ -405,24 +315,15 @@ await Actor.main(async () => {
             log.info(`Found ${tools.length} tool cards on list page`);
 
             for (const tool of tools) {
-                if (saved + detailRequests.length >= resultsWanted) break;
-
-                if (collectDetails) {
-                    if (!seenDetails.has(tool.url)) {
-                        seenDetails.add(tool.url);
-                        detailRequests.push({
-                            url: tool.url,
-                            userData: { toolPreview: tool },
-                        });
-                    }
-                } else if (!seenDetails.has(tool.url)) {
+                if (saved >= resultsWanted) break;
+                if (!seenDetails.has(tool.url)) {
                     seenDetails.add(tool.url);
                     await Actor.pushData(tool);
                     saved++;
                 }
             }
 
-            if (saved + detailRequests.length < resultsWanted && pageNo < maxPages) {
+            if (saved < resultsWanted && pageNo < maxPages) {
                 const nextHref = $('a[rel="next"]').attr('href') || $('a:contains("Next")').attr('href');
                 const nextUrl = nextHref ? toAbsoluteUrl(nextHref, currentUrl) : null;
                 if (nextUrl && !seenPages.has(nextUrl)) {
@@ -445,126 +346,5 @@ await Actor.main(async () => {
     }));
 
     await listCrawler.run(startRequests);
-
-    if (collectDetails && detailRequests.length && saved < resultsWanted) {
-        log.info(`Processing detail pages via Playwright. Pending: ${detailRequests.length}`);
-        const detailCrawler = new PlaywrightCrawler({
-            proxyConfiguration: proxyConfig,
-            maxRequestRetries: 3,
-            useSessionPool: true,
-            sessionPoolOptions: {
-                maxPoolSize: 8,
-                sessionOptions: { maxUsageCount: 4 },
-            },
-            maxConcurrency: DETAIL_CONCURRENCY,
-            requestHandlerTimeoutSecs: 120,
-            navigationTimeoutSecs: 60,
-            launchContext: buildLaunchContext(runUserAgent),
-            browserPoolOptions: {
-                useFingerprints: true,
-                fingerprintOptions: {
-                    fingerprintGeneratorOptions: {
-                        browsers: ['firefox'],
-                        operatingSystems: ['windows', 'macos'],
-                        devices: ['desktop'],
-                    },
-                },
-            },
-            preNavigationHooks: [
-                async ({ page }) => {
-                    await page.context().setExtraHTTPHeaders({
-                        'user-agent': runUserAgent,
-                        'accept-language': 'en-US,en;q=0.9',
-                        'upgrade-insecure-requests': '1',
-                        referer: BASE_URL,
-                    });
-                    await page.route('**/*', (route) => {
-                        const type = route.request().resourceType();
-                        const url = route.request().url();
-                        // Block images, fonts, media, stylesheets, and common trackers
-                        if (['image', 'font', 'media', 'stylesheet'].includes(type) ||
-                            url.includes('google-analytics') ||
-                            url.includes('googletagmanager') ||
-                            url.includes('facebook') ||
-                            url.includes('doubleclick') ||
-                            url.includes('adsense') ||
-                            url.includes('pinterest')) {
-                            return route.abort();
-                        }
-                        return route.continue();
-                    });
-
-                    await page.addInitScript(({ ua }) => {
-                        Object.defineProperty(navigator, 'webdriver', { get: () => false });
-                        window.chrome = { runtime: {} };
-                        Object.defineProperty(navigator, 'languages', { get: () => ['en-US', 'en'] });
-                        Object.defineProperty(navigator, 'plugins', { get: () => [1, 2, 3, 4, 5] });
-                        Object.defineProperty(navigator, 'deviceMemory', { get: () => 8 });
-                        Object.defineProperty(navigator, 'userAgent', { get: () => ua });
-                    }, { ua: runUserAgent });
-                },
-            ],
-            async requestHandler({ page, request, crawler: crawlerInstance }) {
-                if (saved >= resultsWanted) return;
-                const currentUrl = request.url;
-                const toolPreview = request.userData.toolPreview || {};
-
-                log.info(`Processing DETAIL via Playwright: ${currentUrl}`);
-                await page.goto(currentUrl, { waitUntil: 'domcontentloaded', timeout: 60000 });
-                await randomDelay(250, 600);
-
-                if (await page.title().then((t) => t.includes('Just a moment'))) {
-                    log.info('Cloudflare challenge on detail, waiting briefly...');
-                    await page.waitForTimeout(3000);
-                }
-
-                const content = await page.content();
-                const $ = cheerioLoad(content);
-
-                try {
-                    const item = extractDetailItem($, currentUrl);
-                    const mergedPlatforms = uniqueStrings([
-                        ...(Array.isArray(item.platforms) ? item.platforms : []),
-                        ...(Array.isArray(toolPreview.platforms) ? toolPreview.platforms : []),
-                    ]);
-
-                    const finalItem = {
-                        _source: 'alternativeto',
-                        title: item.title || toolPreview.title || null,
-                        description: item.description || toolPreview.description || null,
-                        category: item.category || toolPreview.category || null,
-                        rating: item.rating ?? toolPreview.rating ?? null,
-                        pricing: item.pricing || toolPreview.pricing || toolPreview.license || null,
-                        license: item.license || toolPreview.license || item.pricing || null,
-                        likes: item.likes ?? toolPreview.likes ?? null,
-                        logoUrl: item.logoUrl || toolPreview.logoUrl || null,
-                        platforms: mergedPlatforms.length ? mergedPlatforms : null,
-                        developer: item.developer || toolPreview.developer || null,
-                        url: currentUrl.split('#')[0],
-                    };
-
-                    await Actor.pushData(finalItem);
-                    saved++;
-                    log.info(`Saved item ${saved}/${resultsWanted}: ${finalItem.title}`);
-
-                    if (saved >= resultsWanted) {
-                        await crawlerInstance.autoscaledPool?.abort();
-                    }
-                } catch (error) {
-                    log.error(`Failed to extract detail for ${currentUrl}: ${error.message}`);
-                    if (toolPreview.title) {
-                        await Actor.pushData({ ...toolPreview, _source: 'alternativeto' });
-                        saved++;
-                    }
-                }
-            },
-            failedRequestHandler({ request, error }) {
-                log.error(`Detail request ${request.url} failed: ${error.message}`);
-            },
-        });
-
-        await detailCrawler.run(detailRequests);
-    }
-
     log.info(`Scraping finished. Total items saved: ${saved}`);
 });

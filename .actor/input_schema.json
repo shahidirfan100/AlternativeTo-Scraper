@@ -21,13 +21,6 @@
       "description": "Search keyword on AlternativeTo. Examples: 'DALL-E', 'Midjourney', 'AI image generator'.",
       "editor": "textfield"
     },
-    "collectDetails": {
-      "title": "Collect tool details",
-      "type": "boolean",
-      "description": "If enabled, scraper opens tool detail pages for full description and additional info.",
-      "editor": "checkbox",
-      "default": true
-    },
     "results_wanted": {
       "title": "Maximum number of tools",
       "type": "integer",
