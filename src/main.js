@@ -361,13 +361,17 @@ await Actor.main(async () => {
 
                 if (!toolUrl || !toolUrl.includes('/software/')) return;
 
-                const description = normalizeText($card.find('p, .Description-module-scss-module__text').first().text());
+                const description = normalizeText(
+                    $card.find('p').first().text()
+                    || $card.find('[class*="description"], [class*="Description"]').first().text()
+                    || $card.find('.text-gray-500, .text-base').first().text()
+                );
                 const logoUrl = toAbsoluteUrl(
                     $card.find('img[data-testid^="icon-"]').attr('src') || $card.find('img').first().attr('src'),
                     currentUrl,
                 );
                 const tags = [];
-                $card.find('.flex.flex-wrap[class*="gap-"] span, .flex.flex-wrap[class*="gap-"] a').each((i, tag) => {
+                $card.find('.flex.flex-wrap[class*="gap-"] span, .flex.flex-wrap[class*="gap-"] a, [class*="badge"], li').each((i, tag) => {
                     tags.push(normalizeText($(tag).text()));
                 });
 
@@ -375,8 +379,9 @@ await Actor.main(async () => {
                 const likesParsed = parseInt(likesRaw.replace(/[^0-9]/g, ''), 10);
 
                 // Ratings are often in a specific div on list view now
+                // Robust Rating extraction
                 const ratingRaw = $card.find('div.relative.flex-shrink-0').text()
-                    || $card.find('[itemprop="ratingValue"], [data-rating], [class*="rating"]').first().text();
+                    || $card.find('[itemprop="ratingValue"], [data-rating], [class*="rating"], [class*="Score"]').first().text();
                 const ratingParsed = parseFloat(normalizeText(ratingRaw));
 
                 const platforms = uniqueStrings(tags.filter((t) => PLATFORM_REGEX.test(t)));
