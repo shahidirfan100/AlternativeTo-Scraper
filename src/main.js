@@ -1,6 +1,7 @@
 import { Actor, log } from 'apify';
 import { PlaywrightCrawler } from 'crawlee';
 import { load as cheerioLoad } from 'cheerio';
+import { gotScraping } from 'got-scraping';
 
 const BASE_URL = 'https://alternativeto.net/';
 const PLATFORM_REGEX = /(windows|mac|macos|linux|android|ios|ipad|online|web|self-hosted|saas|chrome|firefox|edge|safari)/i;
@@ -188,14 +189,34 @@ const extractDetailItem = ($, requestUrl) => {
     };
 };
 
-const randomDelay = (min = 1000, max = 3000) =>
-    new Promise(r => setTimeout(r, min + Math.random() * (max - min)));
+const randomDelay = (min = 200, max = 700) =>
+    new Promise((r) => setTimeout(r, min + Math.random() * (max - min)));
+
+const fetchListPage = async (url, proxyConfiguration) => {
+    const proxyUrl = proxyConfiguration ? await proxyConfiguration.newUrl() : undefined;
+    const response = await gotScraping({
+        url,
+        proxyUrl,
+        timeout: { request: 30000 },
+        headers: {
+            'user-agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36',
+            accept: 'text/html,application/xhtml+xml,application/xml;q=0.9,image/webp,*/*;q=0.8',
+            'accept-language': 'en-US,en;q=0.9',
+        },
+    });
+
+    const html = response.body;
+    if (html.includes('Just a moment') && html.includes('cloudflare')) {
+        throw new Error('Cloudflare challenge detected on list page');
+    }
+    return cheerioLoad(html);
+};
 
 await Actor.main(async () => {
     const rawInput = (await Actor.getInput()) ?? {};
     const { keyword, collectDetails, resultsWanted, maxPages, startUrls, proxyConfiguration } = normalizeInput(rawInput);
 
-    log.info('Starting AlternativeTo Playwright scraper', {
+    log.info('Starting AlternativeTo hybrid scraper', {
         keyword: keyword || null,
         collectDetails,
         resultsWanted,
@@ -211,18 +232,19 @@ await Actor.main(async () => {
     let scheduledDetails = 0;
     const seenDetails = new Set();
     const seenPages = new Set();
+    const detailRequests = [];
 
-    const crawler = new PlaywrightCrawler({
+    const detailCrawler = new PlaywrightCrawler({
         proxyConfiguration: proxyConfig,
-        maxRequestRetries: 5,
+        maxRequestRetries: 3,
         useSessionPool: true,
         sessionPoolOptions: {
-            maxPoolSize: 10,
-            sessionOptions: { maxUsageCount: 5 },
+            maxPoolSize: 6,
+            sessionOptions: { maxUsageCount: 3 },
         },
         maxConcurrency: 2,
-        requestHandlerTimeoutSecs: 180,
-        navigationTimeoutSecs: 60,
+        requestHandlerTimeoutSecs: 90,
+        navigationTimeoutSecs: 45,
         browserPoolOptions: {
             useFingerprints: true,
             fingerprintOptions: {
@@ -252,158 +274,163 @@ await Actor.main(async () => {
             },
         ],
         async requestHandler({ page, request, crawler: crawlerInstance }) {
-            const { label = 'LIST', pageNo = 1 } = request.userData;
+            if (saved >= resultsWanted) {
+                scheduledDetails = Math.max(0, scheduledDetails - 1);
+                return;
+            }
             const currentUrl = request.url;
+            const toolPreview = request.userData.toolPreview || {};
 
-            log.info(`Processing ${label}: ${currentUrl} (Page ${pageNo})`);
+            log.info(`Processing DETAIL: ${currentUrl}`);
 
-            await page.waitForLoadState('domcontentloaded');
-            await randomDelay(1000, 2000);
+            await page.goto(currentUrl, { waitUntil: 'domcontentloaded', timeout: 45000 });
+            await randomDelay();
 
-            // Wait for potential Cloudflare challenge to clear
-            if (await page.title().then(t => t.includes('Just a moment'))) {
-                log.info('Cloudflare challenge detected, waiting...');
-                await page.waitForNavigation({ timeout: 30000 }).catch(() => { });
+            if (await page.title().then((t) => t.includes('Just a moment'))) {
+                log.info('Cloudflare challenge detected on detail, waiting briefly...');
+                await page.waitForTimeout(3000);
             }
 
             const content = await page.content();
             const $ = cheerioLoad(content);
 
-            if (label === 'LIST') {
-                const tools = [];
-                // Target the app cards
-                $('div.flex.flex-col.w-full.gap-3, div[data-testid="app-card"]').each((_, el) => {
-                    const $card = $(el);
-                    const $titleLink = $card.find('h2 a, a.no-link-color').first();
-                    const title = normalizeText($titleLink.text());
-                    const href = $titleLink.attr('href');
-                    const url = href ? toAbsoluteUrl(href, currentUrl) : null;
+            try {
+                const item = extractDetailItem($, currentUrl);
+                // Merge preview data with detail data (detail wins if available)
+                const mergedPlatforms = uniqueStrings([
+                    ...(Array.isArray(item.platforms) ? item.platforms : []),
+                    ...(Array.isArray(toolPreview.platforms) ? toolPreview.platforms : []),
+                ]);
 
-                    if (!url || !url.includes('/software/')) return;
+                const finalItem = {
+                    _source: 'alternativeto',
+                    title: item.title || toolPreview.title || null,
+                    description: item.description || toolPreview.description || null,
+                    category: item.category || toolPreview.category || null,
+                    rating: item.rating ?? toolPreview.rating ?? null,
+                    pricing: item.pricing || toolPreview.pricing || toolPreview.license || null,
+                    license: item.license || toolPreview.license || item.pricing || null,
+                    likes: item.likes ?? toolPreview.likes ?? null,
+                    logoUrl: item.logoUrl || toolPreview.logoUrl || null,
+                    platforms: mergedPlatforms.length ? mergedPlatforms : null,
+                    developer: item.developer || toolPreview.developer || null,
+                    url: currentUrl.split('#')[0],
+                };
 
-                    const description = normalizeText($card.find('p, .Description-module-scss-module__text').first().text());
-                    const logoUrl = toAbsoluteUrl(
-                        $card.find('img[data-testid^="icon-"]').attr('src') || $card.find('img').first().attr('src'),
-                        currentUrl,
-                    );
-                    const likesRaw = $card.find('[class*="heart"] span, .ModernLikeButton-module-scss-module__xuujAq__heart span').text();
-                    const likesParsed = parseInt(likesRaw.replace(/[^0-9]/g, ''), 10);
+                await Actor.pushData(finalItem);
+                saved++;
+                log.info(`Saved item ${saved}/${resultsWanted}: ${finalItem.title}`);
 
-                    const tags = [];
-                    $card.find('.flex.flex-wrap.gap-2 span, .flex.flex-wrap.gap-2 a').each((i, tag) => {
-                        tags.push(normalizeText($(tag).text()));
-                    });
-
-                    // Platforms are usually links or tags with specific names
-                    const platforms = uniqueStrings(tags.filter((t) => PLATFORM_REGEX.test(t)));
-                    const license = tags.find((t) => LICENSE_REGEX.test(t)) || null;
-                    const pricing = license || null;
-
-                    tools.push({
-                        title,
-                        url: url.split('#')[0],
-                        description,
-                        logoUrl,
-                        likes: Number.isFinite(likesParsed) ? likesParsed : null,
-                        platforms,
-                        license,
-                        pricing,
-                        _source: 'alternativeto',
-                    });
-                });
-
-                log.info(`Found ${tools.length} tool cards on list page`);
-
-                for (const tool of tools) {
-                    if (saved >= resultsWanted) break;
-
-                    if (collectDetails) {
-                        if (!seenDetails.has(tool.url)) {
-                            seenDetails.add(tool.url);
-                            scheduledDetails++;
-                            await crawlerInstance.addRequests([{
-                                url: tool.url,
-                                userData: { label: 'DETAIL', toolPreview: tool }
-                            }]);
-                        }
-                    } else if (!seenDetails.has(tool.url)) {
-                        seenDetails.add(tool.url);
-                        await Actor.pushData(tool);
-                        saved++;
-                    }
+                if (saved >= resultsWanted) {
+                    log.info('Results limit reached, stopping...');
+                    await crawlerInstance.autoscaledPool?.abort();
                 }
-
-                // Pagination
-                if (saved + scheduledDetails < resultsWanted && pageNo < maxPages) {
-                    const nextHref = $('a[rel="next"]').attr('href') || $('a:contains("Next")').attr('href');
-                    const nextUrl = nextHref ? toAbsoluteUrl(nextHref, currentUrl) : null;
-
-                    if (nextUrl && !seenPages.has(nextUrl)) {
-                        seenPages.add(nextUrl);
-                        await crawlerInstance.addRequests([{
-                            url: nextUrl,
-                            userData: { label: 'LIST', pageNo: pageNo + 1 }
-                        }]);
-                    }
-                }
-            } else if (label === 'DETAIL') {
-                if (saved >= resultsWanted) return;
-
-                const toolPreview = request.userData.toolPreview || {};
-
-                try {
-                    const item = extractDetailItem($, currentUrl);
-                    // Merge preview data with detail data (detail wins if available)
-                    const mergedPlatforms = uniqueStrings([
-                        ...(Array.isArray(item.platforms) ? item.platforms : []),
-                        ...(Array.isArray(toolPreview.platforms) ? toolPreview.platforms : []),
-                    ]);
-
-                    const finalItem = {
-                        _source: 'alternativeto',
-                        title: item.title || toolPreview.title || null,
-                        description: item.description || toolPreview.description || null,
-                        category: item.category || toolPreview.category || null,
-                        rating: item.rating ?? toolPreview.rating ?? null,
-                        pricing: item.pricing || toolPreview.pricing || toolPreview.license || null,
-                        license: item.license || toolPreview.license || item.pricing || null,
-                        likes: item.likes ?? toolPreview.likes ?? null,
-                        logoUrl: item.logoUrl || toolPreview.logoUrl || null,
-                        platforms: mergedPlatforms.length ? mergedPlatforms : null,
-                        developer: item.developer || toolPreview.developer || null,
-                        url: currentUrl.split('#')[0],
-                    };
-
-                    await Actor.pushData(finalItem);
+            } catch (error) {
+                log.error(`Failed to extract detail for ${currentUrl}: ${error.message}`);
+                // Push at least the preview data if detail fails
+                if (toolPreview.title) {
+                    await Actor.pushData({ ...toolPreview, _source: 'alternativeto' });
                     saved++;
-                    log.info(`Saved item ${saved}/${resultsWanted}: ${finalItem.title}`);
-
-                    if (saved >= resultsWanted) {
-                        log.info('Results limit reached, stopping...');
-                        await crawlerInstance.autoscaledPool?.abort();
-                    }
-                } catch (error) {
-                    log.error(`Failed to extract detail for ${currentUrl}: ${error.message}`);
-                    // Push at least the preview data if detail fails
-                    if (toolPreview.title) {
-                        await Actor.pushData(toolPreview);
-                        saved++;
-                    }
-                } finally {
-                    scheduledDetails--;
                 }
+            } finally {
+                scheduledDetails--;
             }
         },
         failedRequestHandler({ request, error }) {
-            log.error(`Request ${request.url} failed: ${error.message}`);
+            log.error(`Detail request ${request.url} failed: ${error.message}`);
         },
     });
 
-    const startRequests = startUrls.map(url => ({
-        url,
-        userData: { label: 'LIST', pageNo: 1 }
-    }));
+    const listQueue = startUrls.map((url) => ({ url, pageNo: 1 }));
 
-    await crawler.run(startRequests);
+    while (listQueue.length && saved + scheduledDetails < resultsWanted) {
+        const { url, pageNo } = listQueue.shift();
+        if (pageNo > maxPages) break;
+        if (seenPages.has(url)) continue;
+        seenPages.add(url);
+
+        log.info(`Processing LIST via HTTP: ${url} (Page ${pageNo})`);
+        let $;
+        try {
+            $ = await fetchListPage(url, proxyConfig);
+        } catch (err) {
+            log.warning(`HTTP fetch failed for ${url}: ${err.message}`);
+            continue;
+        }
+
+        const tools = [];
+        $('div.flex.flex-col.w-full.gap-3, div[data-testid="app-card"]').each((_, el) => {
+            const $card = $(el);
+            const $titleLink = $card.find('h2 a, a.no-link-color').first();
+            const title = normalizeText($titleLink.text());
+            const href = $titleLink.attr('href');
+            const toolUrl = href ? toAbsoluteUrl(href, url) : null;
+
+            if (!toolUrl || !toolUrl.includes('/software/')) return;
+
+            const description = normalizeText($card.find('p, .Description-module-scss-module__text').first().text());
+            const logoUrl = toAbsoluteUrl(
+                $card.find('img[data-testid^="icon-"]').attr('src') || $card.find('img').first().attr('src'),
+                url,
+            );
+            const likesRaw = $card.find('[class*="heart"] span, .ModernLikeButton-module-scss-module__xuujAq__heart span').text();
+            const likesParsed = parseInt(likesRaw.replace(/[^0-9]/g, ''), 10);
+
+            const tags = [];
+            $card.find('.flex.flex-wrap.gap-2 span, .flex.flex-wrap.gap-2 a').each((i, tag) => {
+                tags.push(normalizeText($(tag).text()));
+            });
+
+            const platforms = uniqueStrings(tags.filter((t) => PLATFORM_REGEX.test(t)));
+            const license = tags.find((t) => LICENSE_REGEX.test(t)) || null;
+            const pricing = license || null;
+
+            tools.push({
+                title,
+                url: toolUrl.split('#')[0],
+                description,
+                logoUrl,
+                likes: Number.isFinite(likesParsed) ? likesParsed : null,
+                platforms,
+                license,
+                pricing,
+                _source: 'alternativeto',
+            });
+        });
+
+        log.info(`Found ${tools.length} tool cards on list page`);
+
+        for (const tool of tools) {
+            if (saved + scheduledDetails >= resultsWanted) break;
+
+            if (collectDetails) {
+                if (!seenDetails.has(tool.url)) {
+                    seenDetails.add(tool.url);
+                    scheduledDetails++;
+                    detailRequests.push({
+                        url: tool.url,
+                        userData: { toolPreview: tool },
+                    });
+                }
+            } else if (!seenDetails.has(tool.url)) {
+                seenDetails.add(tool.url);
+                await Actor.pushData(tool);
+                saved++;
+            }
+        }
+
+        if (saved + scheduledDetails < resultsWanted && pageNo < maxPages) {
+            const nextHref = $('a[rel="next"]').attr('href') || $('a:contains("Next")').attr('href');
+            const nextUrl = nextHref ? toAbsoluteUrl(nextHref, url) : null;
+            if (nextUrl && !seenPages.has(nextUrl)) {
+                listQueue.push({ url: nextUrl, pageNo: pageNo + 1 });
+            }
+        }
+    }
+
+    if (collectDetails && detailRequests.length) {
+        await detailCrawler.run(detailRequests);
+    }
+
     log.info(`Scraping finished. Total items saved: ${saved}`);
 });
