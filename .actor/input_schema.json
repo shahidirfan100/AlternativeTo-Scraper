@@ -15,12 +15,6 @@
         }
       ]
     },
-    "keyword": {
-      "title": "Search Keyword (if not using Start URL)",
-      "type": "string",
-      "description": "Search keyword on AlternativeTo. Examples: 'DALL-E', 'Midjourney', 'AI image generator'.",
-      "editor": "textfield"
-    },
     "results_wanted": {
       "title": "Maximum number of tools",
       "type": "integer",
