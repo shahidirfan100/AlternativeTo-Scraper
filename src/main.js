@@ -3,18 +3,23 @@ import { PlaywrightCrawler } from 'crawlee';
 import { firefox } from 'playwright';
 import { load as cheerioLoad } from 'cheerio';
 
+await Actor.init();
+
+// CONFIGURATION
 const BASE_URL = 'https://alternativeto.net/';
-const PLATFORM_REGEX = /(windows|mac|macos|linux|android|ios|ipad|online|web|self-hosted|saas|chrome|firefox|edge|safari)/i;
 const LICENSE_REGEX = /(free|open\s*source|opensource|paid|freemium|proprietary|commercial|trial|subscription|one[-\s]?time)/i;
 const USER_AGENTS = [
     'Mozilla/5.0 (Windows NT 10.0; Win64; x64; rv:147.0) Gecko/20100101 Firefox/147.0',
     'Mozilla/5.0 (Macintosh; Intel Mac OS X 15.7; rv:147.0) Gecko/20100101 Firefox/147.0',
     'Mozilla/5.0 (X11; Linux x86_64; rv:147.0) Gecko/20100101 Firefox/147.0',
 ];
+const getRandomUserAgent = () => USER_AGENTS[Math.floor(Math.random() * USER_AGENTS.length)];
+
 const DEFAULT_START_URLS = [
     'https://alternativeto.net/category/ai-tools/ai-image-generator/',
 ];
 
+// HELPERS
 const toAbsoluteUrl = (href, base = BASE_URL) => {
     try {
         return new URL(href, base).href;
@@ -24,14 +29,6 @@ const toAbsoluteUrl = (href, base = BASE_URL) => {
 };
 
 const normalizeText = (text) => (text ? String(text).replace(/\s+/g, ' ').trim() : '');
-const uniqueStrings = (values = []) => [...new Set(values.map(normalizeText).filter(Boolean))];
-
-const htmlToText = (html) => {
-    if (!html) return '';
-    const $ = cheerioLoad(html);
-    $('script, style, noscript, iframe').remove();
-    return normalizeText($.root().text());
-};
 
 const buildSearchUrl = (keyword) => {
     const url = new URL(BASE_URL);
@@ -44,24 +41,6 @@ const parsePositiveInteger = (value, fallback, fieldName) => {
     if (Number.isFinite(num) && num > 0) return Math.floor(num);
     if (fallback !== undefined) return fallback;
     throw new Error(`Invalid ${fieldName} supplied. Provide a positive number.`);
-};
-
-// Helper to extract tags based on section header
-const evaluateText = (text) => (text ? String(text).replace(/\s+/g, ' ').trim() : '');
-
-const extractTagsByHeader = ($container, headerText) => {
-    const HEADER_REGEX = new RegExp(headerText, 'i');
-    const $header = $container.find('h4').filter((_, el) => HEADER_REGEX.test(evaluateText($(el).text())));
-    if (!$header.length) return [];
-
-    // The list is usually the next sibling UL or inside a div following the header
-    const $list = $header.next('ul, div').find('li, span, a');
-    const tags = [];
-    $list.each((_, el) => {
-        const txt = normalizeText($(el).text());
-        if (txt) tags.push(txt);
-    });
-    return [...new Set(tags)]; // Unique
 };
 
 const normalizeInput = (rawInput) => {
@@ -102,7 +81,6 @@ const normalizeInput = (rawInput) => {
     const normalizedStartUrls = [...new Set(sources.map((href) => {
         const abs = toAbsoluteUrl(href);
         if (!abs) return null;
-        // Normalize: remove /about/ or /reviews/ to get the main list page
         return abs.replace(/\/about\/?$/, '/').replace(/\/reviews\/?$/, '/');
     }).filter(Boolean))];
     if (!normalizedStartUrls.length) {
@@ -120,228 +98,195 @@ const normalizeInput = (rawInput) => {
     };
 };
 
-const randomDelay = (min = 100, max = 300) =>
-    new Promise((r) => setTimeout(r, min + Math.random() * (max - min)));
+const rawInput = (await Actor.getInput()) ?? {};
+const { keyword, resultsWanted, maxPages, startUrls, proxyConfiguration } = normalizeInput(rawInput);
 
-const getRandomUA = () => USER_AGENTS[Math.floor(Math.random() * USER_AGENTS.length)];
-
-const buildLaunchContext = (ua) => ({
-    launcher: firefox,
-    launchOptions: {
-        headless: true,
-    },
-    userAgent: ua,
+log.info('Starting AlternativeTo Playwright Firefox scraper', {
+    keyword: keyword || null,
+    resultsWanted,
+    maxPages,
 });
 
-await Actor.main(async () => {
-    const rawInput = (await Actor.getInput()) ?? {};
-    const { keyword, resultsWanted, maxPages, startUrls, proxyConfiguration } = normalizeInput(rawInput);
+const proxyConfig = await Actor.createProxyConfiguration(proxyConfiguration || {
+    useApifyProxy: true,
+    apifyProxyGroups: ['RESIDENTIAL'],
+});
 
-    log.info('Starting AlternativeTo Playwright-only scraper', {
-        keyword: keyword || null,
-        resultsWanted,
-        maxPages,
-    });
+let saved = 0;
+const seenDetails = new Set();
+const seenPages = new Set();
 
-    const proxyConfig = await Actor.createProxyConfiguration(proxyConfiguration || {
-        useApifyProxy: true,
-        apifyProxyGroups: ['RESIDENTIAL'],
-    });
-
-    const runUserAgent = getRandomUA();
-    let saved = 0;
-    const seenDetails = new Set();
-    const seenPages = new Set();
-
-    const listCrawler = new PlaywrightCrawler({
-        proxyConfiguration: proxyConfig,
-        maxRequestRetries: 3,
-        useSessionPool: true,
-        sessionPoolOptions: {
-            maxPoolSize: 8,
-            sessionOptions: { maxUsageCount: 4 },
+const crawler = new PlaywrightCrawler({
+    launchContext: {
+        launcher: firefox,
+        launchOptions: {
+            headless: true,
         },
-        minConcurrency: 1,
-        maxConcurrency: 2,
-        requestHandlerTimeoutSecs: 90,
-        navigationTimeoutSecs: 45,
-        launchContext: buildLaunchContext(runUserAgent),
-        browserPoolOptions: {
-            useFingerprints: true,
-            fingerprintOptions: {
-                fingerprintGeneratorOptions: {
-                    browsers: ['firefox'],
-                    operatingSystems: ['windows', 'macos'],
-                    devices: ['desktop'],
-                },
-            },
+        userAgent: getRandomUserAgent(),
+    },
+    proxyConfiguration: proxyConfig,
+    maxConcurrency: 5,
+    maxRequestRetries: 1,
+    navigationTimeoutSecs: 30,
+    requestHandlerTimeoutSecs: 45,
+
+    // Block heavy resources and trackers
+    preNavigationHooks: [
+        async ({ page }) => {
+            await page.route('**/*', (route) => {
+                const type = route.request().resourceType();
+                const url = route.request().url();
+
+                // Block images, fonts, media, stylesheets, and common trackers
+                if (['image', 'font', 'media', 'stylesheet'].includes(type) ||
+                    url.includes('google-analytics') ||
+                    url.includes('googletagmanager') ||
+                    url.includes('facebook') ||
+                    url.includes('doubleclick') ||
+                    url.includes('adsense') ||
+                    url.includes('pinterest')) {
+                    return route.abort();
+                }
+                return route.continue();
+            });
         },
-        preNavigationHooks: [
-            async ({ page }) => {
-                await page.context().setExtraHTTPHeaders({
-                    'user-agent': runUserAgent,
-                    'accept-language': 'en-US,en;q=0.9',
-                    'upgrade-insecure-requests': '1',
-                    referer: BASE_URL,
-                });
-                await page.route('**/*', (route) => {
-                    const type = route.request().resourceType();
-                    const url = route.request().url();
-                    // Block images, fonts, media, stylesheets, and common trackers
-                    if (['image', 'font', 'media', 'stylesheet'].includes(type) ||
-                        url.includes('google-analytics') ||
-                        url.includes('googletagmanager') ||
-                        url.includes('facebook') ||
-                        url.includes('doubleclick') ||
-                        url.includes('adsense') ||
-                        url.includes('pinterest')) {
-                        return route.abort();
-                    }
-                    return route.continue();
-                });
+    ],
 
-                await page.addInitScript(({ ua }) => {
-                    Object.defineProperty(navigator, 'webdriver', { get: () => false });
-                    window.chrome = { runtime: {} };
-                    Object.defineProperty(navigator, 'languages', { get: () => ['en-US', 'en'] });
-                    Object.defineProperty(navigator, 'plugins', { get: () => [1, 2, 3, 4, 5] });
-                    Object.defineProperty(navigator, 'deviceMemory', { get: () => 8 });
-                    Object.defineProperty(navigator, 'userAgent', { get: () => ua });
-                }, { ua: runUserAgent });
-            },
-        ],
-        async requestHandler({ page, request, crawler: crawlerInstance }) {
-            const { pageNo = 1 } = request.userData;
-            const currentUrl = request.url;
-            seenPages.add(currentUrl);
+    requestHandler: async ({ page, request, crawler: crawlerInstance }) => {
+        const { pageNo = 1 } = request.userData;
+        const currentUrl = request.url;
+        seenPages.add(currentUrl);
 
-            log.info(`Processing LIST via Playwright: ${currentUrl} (Page ${pageNo})`);
-            await page.goto(currentUrl, { waitUntil: 'domcontentloaded', timeout: 45000 });
-            await randomDelay(250, 600);
+        log.info(`Processing: ${currentUrl} (Page ${pageNo})`);
 
-            if (await page.title().then((t) => t.includes('Just a moment'))) {
-                log.info('Cloudflare challenge on list, waiting briefly...');
-                await page.waitForTimeout(3000);
-            }
+        // Wait for key content
+        try {
+            await page.waitForSelector('body', { timeout: 10000 });
+        } catch {
+            log.warning(`Content load failed: ${currentUrl}`);
+            return;
+        }
 
-            const content = await page.content();
-            const $ = cheerioLoad(content);
+        // Fast scroll to trigger lazy loading
+        await page.evaluate(() => window.scrollTo(0, document.body.scrollHeight));
 
-            const tools = [];
+        const content = await page.content();
+        const $ = cheerioLoad(content);
 
-            // Container Strategy: Find items with the specific structure (H2 + content)
-            // The browser check suggested: div[data-testid="app-listing-item"] OR divs with h2.Heading-module...
-            const $cards = $('div[data-testid="app-listing-item"], h2.Heading-module-scss-module__br2CUG__h2').closest('div[class*="rounded"]');
-            const $finalCards = $cards.length ? $cards : $('div.flex.flex-col.gap-3 > div');
+        const extractTagsByHeader = ($container, headerText) => {
+            const HEADER_REGEX = new RegExp(headerText, 'i');
+            const $header = $container.find('h4').filter((_, el) => HEADER_REGEX.test(normalizeText($(el).text())));
+            if (!$header.length) return [];
 
-            $finalCards.each((_, el) => {
-                const $card = $(el);
+            const $list = $header.next('ul, div').find('li, span, a');
+            const tags = [];
+            $list.each((_, el) => {
+                const txt = normalizeText($(el).text());
+                if (txt) tags.push(txt);
+            });
+            return [...new Set(tags)];
+        };
 
-                // 1. Title
-                const $titleLink = $card.find('h2[class*="Heading-module"], h2 a, h2').first();
-                const title = normalizeText($titleLink.text());
-                const href = $titleLink.find('a').attr('href') || $titleLink.attr('href') || $card.find('a[href*="/software/"]').first().attr('href');
-                const toolUrl = href ? toAbsoluteUrl(href, currentUrl) : null;
+        const tools = [];
+        const $cards = $('div[data-testid="app-listing-item"], h2.Heading-module-scss-module__br2CUG__h2').closest('div[class*="rounded"]');
+        const $finalCards = $cards.length ? $cards : $('div.flex.flex-col.gap-3 > div');
 
-                if (!toolUrl || !toolUrl.includes('/software/')) return;
+        $finalCards.each((_, el) => {
+            const $card = $(el);
+            const $titleLink = $card.find('h2[class*="Heading-module"], h2 a, h2').first();
+            const title = normalizeText($titleLink.text());
+            const href = $titleLink.find('a').attr('href') || $titleLink.attr('href') || $card.find('a[href*="/software/"]').first().attr('href');
+            const toolUrl = href ? toAbsoluteUrl(href, currentUrl) : null;
 
-                // 2. Description
-                const description = normalizeText(
-                    $card.find('div.md_Compact p').first().text()
-                    || $card.find('#app-description p').first().text()
-                    || $card.find('p[class*="Description"], p').first().text()
-                );
+            if (!toolUrl || !toolUrl.includes('/software/')) return;
 
-                // 3. Logo
-                const logoUrl = toAbsoluteUrl(
-                    $card.find('img[data-testid^="icon-"]').attr('src') || $card.find('img').first().attr('src'),
-                    currentUrl,
-                );
+            const description = normalizeText(
+                $card.find('div.md_Compact p').first().text()
+                || $card.find('#app-description p').first().text()
+                || $card.find('p[class*="Description"], p').first().text()
+            );
 
-                // 4. Likes
-                const likesRaw = $card.find('[aria-label^="Like"] span, [class*="heart"] span').text();
-                const likesParsed = parseInt(likesRaw.replace(/[^0-9]/g, ''), 10);
+            const logoUrl = toAbsoluteUrl(
+                $card.find('img[data-testid^="icon-"]').attr('src') || $card.find('img').first().attr('src'),
+                currentUrl,
+            );
 
-                // 5. Cost & License (from "Cost / License" header)
-                const costLicenseTags = extractTagsByHeader($card, 'Cost / License') || [];
-                const cost = costLicenseTags[0] || null;
-                const license = costLicenseTags[1] || costLicenseTags.find(t => LICENSE_REGEX.test(t)) || null;
-                const pricing = cost || null;
+            const likesRaw = $card.find('[aria-label^="Like"] span, [class*="heart"] span').text();
+            const likesParsed = parseInt(likesRaw.replace(/[^0-9]/g, ''), 10);
 
-                // 6. Application Types
-                const appTypes = extractTagsByHeader($card, 'Application Types');
+            const costLicenseTags = extractTagsByHeader($card, 'Cost / License') || [];
+            const cost = costLicenseTags[0] || null;
+            const license = costLicenseTags[1] || costLicenseTags.find(t => LICENSE_REGEX.test(t)) || null;
 
-                // 7. Platforms
-                const platforms = extractTagsByHeader($card, 'Platforms');
+            const appTypes = extractTagsByHeader($card, 'Application Types');
+            const platforms = extractTagsByHeader($card, 'Platforms');
+            const origins = extractTagsByHeader($card, 'Made in');
+            const bestAlternativeText = normalizeText($card.find('.text-meta').first().text());
 
-                // 8. Origins
-                const origins = extractTagsByHeader($card, 'Made in');
-
-                // 9. Best Alternative (text check)
-                const bestAlternativeText = normalizeText($card.find('.text-meta').first().text());
-
-                // 10. Images (screen capture thumbs)
-                const images = [];
-                $card.find('div[aria-label="Open image in lightbox"] img').each((_, img) => {
-                    images.push(toAbsoluteUrl($(img).attr('src'), currentUrl));
-                });
-
-                // 11. Rating (Often not present in list, check fallback)
-                const ratingRaw = $card.find('div.relative.flex-shrink-0').text();
-                const ratingParsed = parseFloat(normalizeText(ratingRaw));
-
-                tools.push({
-                    title,
-                    url: toolUrl.split('#')[0],
-                    description,
-                    logoUrl,
-                    likes: Number.isFinite(likesParsed) ? likesParsed : null,
-                    rating: Number.isFinite(ratingParsed) ? ratingParsed : null,
-                    cost,
-                    license,
-                    pricing,
-                    applicationTypes: appTypes.length ? appTypes : null,
-                    platforms: platforms.length ? platforms : null,
-                    origins: origins.length ? origins : null,
-                    bestAlternative: bestAlternativeText || null,
-                    images: images.length ? images : null,
-                    _source: 'alternativeto',
-                });
+            const images = [];
+            $card.find('div[aria-label="Open image in lightbox"] img').each((_, img) => {
+                images.push(toAbsoluteUrl($(img).attr('src'), currentUrl));
             });
 
-            log.info(`Found ${tools.length} tool cards on list page`);
+            const ratingRaw = $card.find('div.relative.flex-shrink-0').text();
+            const ratingParsed = parseFloat(normalizeText(ratingRaw));
 
-            for (const tool of tools) {
-                if (saved >= resultsWanted) break;
-                if (!seenDetails.has(tool.url)) {
-                    seenDetails.add(tool.url);
-                    await Actor.pushData(tool);
-                    saved++;
-                }
+            tools.push({
+                title,
+                url: toolUrl.split('#')[0],
+                description,
+                logoUrl,
+                likes: Number.isFinite(likesParsed) ? likesParsed : null,
+                rating: Number.isFinite(ratingParsed) ? ratingParsed : null,
+                cost,
+                license,
+                pricing: cost || null,
+                applicationTypes: appTypes.length ? appTypes : null,
+                platforms: platforms.length ? platforms : null,
+                origins: origins.length ? origins : null,
+                bestAlternative: bestAlternativeText || null,
+                images: images.length ? images : null,
+                _source: 'alternativeto',
+            });
+        });
+
+        log.info(`Found ${tools.length} tool cards on page`);
+
+        for (const tool of tools) {
+            if (saved >= resultsWanted) break;
+            if (!seenDetails.has(tool.url)) {
+                seenDetails.add(tool.url);
+                await Actor.pushData(tool);
+                saved++;
             }
+        }
 
-            if (saved < resultsWanted && pageNo < maxPages) {
-                const nextHref = $('a[rel="next"]').attr('href') || $('a:contains("Next")').attr('href');
-                const nextUrl = nextHref ? toAbsoluteUrl(nextHref, currentUrl) : null;
-                if (nextUrl && !seenPages.has(nextUrl)) {
-                    seenPages.add(nextUrl);
-                    await crawlerInstance.addRequests([{
-                        url: nextUrl,
-                        userData: { pageNo: pageNo + 1 },
-                    }]);
-                }
+        if (saved < resultsWanted && pageNo < maxPages) {
+            const nextHref = $('a[rel="next"]').attr('href') || $('a:contains("Next")').attr('href');
+            const nextUrl = nextHref ? toAbsoluteUrl(nextHref, currentUrl) : null;
+            if (nextUrl && !seenPages.has(nextUrl)) {
+                await crawlerInstance.addRequests([{
+                    url: nextUrl,
+                    userData: { pageNo: pageNo + 1 },
+                }]);
             }
-        },
-        failedRequestHandler({ request, error }) {
-            log.error(`List request ${request.url} failed: ${error.message}`);
-        },
-    });
+        }
+    },
 
-    const startRequests = startUrls.map((url) => ({
-        url,
-        userData: { pageNo: 1 },
-    }));
-
-    await listCrawler.run(startRequests);
-    log.info(`Scraping finished. Total items saved: ${saved}`);
+    failedRequestHandler: async ({ request }, error) => {
+        if (error.message?.includes('403')) {
+            log.warning(`Blocked (403): ${request.url} - skipping`);
+        } else {
+            log.error(`Failed: ${request.url}`, { error: error.message });
+        }
+    },
 });
+
+const startRequests = startUrls.map((url) => ({
+    url,
+    userData: { pageNo: 1 },
+}));
+
+await crawler.run(startRequests);
+log.info(`Scraping finished. Total items saved: ${saved}`);
+await Actor.exit();

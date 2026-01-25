@@ -5,7 +5,7 @@ FROM apify/actor-node-playwright-firefox:22-1.56.1
 RUN npm ls crawlee apify puppeteer playwright
 
 # Copy just package.json and package-lock.json first for caching
-COPY --chown=myuser:myuser package*.json Dockerfile check-playwright-version.mjs ./
+COPY --chown=myuser:myuser package*.json Dockerfile ./
 
 # Check Playwright version matches base image
 RUN node check-playwright-version.mjs
