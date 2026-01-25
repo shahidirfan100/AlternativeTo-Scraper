@@ -82,7 +82,12 @@ const normalizeInput = (rawInput) => {
         DEFAULT_START_URLS.forEach(addSource);
     }
 
-    const normalizedStartUrls = [...new Set(sources.map((href) => toAbsoluteUrl(href)).filter(Boolean))];
+    const normalizedStartUrls = [...new Set(sources.map((href) => {
+        const abs = toAbsoluteUrl(href);
+        if (!abs) return null;
+        // Normalize: remove /about/ or /reviews/ to get the main list page
+        return abs.replace(/\/about\/?$/, '/').replace(/\/reviews\/?$/, '/');
+    }).filter(Boolean))];
     if (!normalizedStartUrls.length) {
         const fallbackUrl = keyword ? buildSearchUrl(keyword) : DEFAULT_START_URLS[0];
         normalizedStartUrls.push(fallbackUrl);
@@ -342,7 +347,12 @@ await Actor.main(async () => {
             const $ = cheerioLoad(content);
 
             const tools = [];
-            $('div.flex.flex-col.w-full.gap-3, div[data-testid="app-card"]').each((_, el) => {
+            // Broadened selector to catch cards on Category pages AND Product Alternative pages
+            // Product pages often list alternatives in a section, but the cards usually have data-testid="app-card"
+            // or are within a specific grid.
+            const $cards = $('div[data-testid="app-card"], li div[data-testid="app-card"], div.flex.flex-col.gap-3 > div');
+
+            $cards.each((_, el) => {
                 const $card = $(el);
                 const $titleLink = $card.find('h2 a, a.no-link-color').first();
                 const title = normalizeText($titleLink.text());
