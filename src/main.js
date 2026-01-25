@@ -3,6 +3,8 @@ import { PlaywrightCrawler } from 'crawlee';
 import { load as cheerioLoad } from 'cheerio';
 
 const BASE_URL = 'https://alternativeto.net/';
+const PLATFORM_REGEX = /(windows|mac|macos|linux|android|ios|ipad|online|web|self-hosted|saas|chrome|firefox|edge|safari)/i;
+const LICENSE_REGEX = /(free|open\s*source|opensource|paid|freemium|proprietary|commercial|trial|subscription|one[-\s]?time)/i;
 
 const toAbsoluteUrl = (href, base = BASE_URL) => {
     try {
@@ -13,6 +15,7 @@ const toAbsoluteUrl = (href, base = BASE_URL) => {
 };
 
 const normalizeText = (text) => (text ? String(text).replace(/\s+/g, ' ').trim() : '');
+const uniqueStrings = (values = []) => [...new Set(values.map(normalizeText).filter(Boolean))];
 
 const htmlToText = (html) => {
     if (!html) return '';
@@ -81,29 +84,55 @@ const extractRating = ($) => {
     return Number.isFinite(parsed) ? parsed : null;
 };
 
+const parseJsonLd = ($) => {
+    const blocks = [];
+    $('script[type="application/ld+json"]').each((_, el) => {
+        try {
+            const content = $(el).contents().text();
+            if (!content) return;
+            const parsed = JSON.parse(content);
+            if (Array.isArray(parsed)) blocks.push(...parsed);
+            else blocks.push(parsed);
+        } catch {
+            // ignore malformed JSON-LD
+        }
+    });
+    return blocks;
+};
+
 const extractDetailItem = ($, requestUrl) => {
+    const jsonLdBlocks = parseJsonLd($);
+    const softwareLd = jsonLdBlocks.find(
+        (obj) => obj && (obj['@type'] === 'SoftwareApplication' || obj['@type'] === 'Product'),
+    ) || {};
+
     const title = normalizeText(
         $('h1[itemprop="name"], h1.text-2xl, h1.title, .software-title, h1')
             .first()
             .text()
         || $('meta[property="og:title"]').attr('content')
+        || softwareLd.name
         || $('title').text(),
     ) || null;
 
     const descriptionHtml = $('.description, .software-description, [class*="description"]').first().html()
         || $('meta[name="description"]').attr('content')
         || $('[itemprop="description"]').html()
+        || softwareLd.description
         || '';
     const description = normalizeText(htmlToText(descriptionHtml)) || null;
 
     const category = normalizeText(
         $('a[href*="/category/"]').first().text()
         || $('[class*="breadcrumb"] a').eq(1).text()
-        || $('.category').first().text(),
+        || $('.category').first().text()
+        || softwareLd.applicationCategory,
     ) || null;
 
     const pricing = normalizeText(
-        $('[class*="license"], [class*="pricing"], .license-type, .price').first().text(),
+        $('[class*="license"], [class*="pricing"], .license-type, .price').first().text()
+        || softwareLd.offers?.price
+        || softwareLd.offers?.priceCurrency,
     ) || null;
 
     const rating = extractRating($);
@@ -111,8 +140,38 @@ const extractDetailItem = ($, requestUrl) => {
     const developer = normalizeText(
         $('[itemprop="publisher"] [itemprop="name"]').text()
         || $('[data-testid="developer-link"]').text()
-        || $('a[href*="/developer/"]').first().text(),
+        || $('a[href*="/developer/"]').first().text()
+        || softwareLd.publisher?.name
+        || softwareLd.manufacturer?.name,
     ) || null;
+
+    const logoUrl = toAbsoluteUrl(
+        $('meta[property="og:image"]').attr('content')
+        || $('.software-icon img, img[data-testid^="icon-"]').first().attr('src')
+        || softwareLd.image,
+        requestUrl,
+    );
+
+    const tagTexts = [];
+    $('a[href*="/license/"], a[href*="/platform/"], .flex.flex-wrap.gap-2 a, .flex.flex-wrap.gap-2 span, [class*="badge"], [class*="tag"]').each((_, el) => {
+        tagTexts.push(normalizeText($(el).text()));
+    });
+
+    const platforms = uniqueStrings([
+        ...$('a[href*="/platform/"]').map((_, el) => normalizeText($(el).text())).get(),
+        ...(Array.isArray(softwareLd.operatingSystem) ? softwareLd.operatingSystem : [softwareLd.operatingSystem]),
+        ...tagTexts.filter((text) => PLATFORM_REGEX.test(text)),
+    ]);
+
+    const license = normalizeText(
+        tagTexts.find((text) => LICENSE_REGEX.test(text))
+        || softwareLd.license
+        || softwareLd.offers?.license
+        || $('[class*="license"]').first().text(),
+    ) || null;
+
+    const likesText = $('[data-testid*="heart"] span, [class*="heart"] span, [class*="likes"] span').first().text();
+    const likes = Number.parseInt(likesText.replace(/\D+/g, ''), 10);
 
     return {
         title,
@@ -121,6 +180,10 @@ const extractDetailItem = ($, requestUrl) => {
         rating,
         pricing,
         developer,
+        license,
+        platforms,
+        logoUrl,
+        likes: Number.isFinite(likes) ? likes : null,
         url: requestUrl,
     };
 };
@@ -219,9 +282,12 @@ await Actor.main(async () => {
                     if (!url || !url.includes('/software/')) return;
 
                     const description = normalizeText($card.find('p, .Description-module-scss-module__text').first().text());
-                    const logoUrl = $card.find('img[data-testid^="icon-"]').attr('src') || $card.find('img').first().attr('src');
+                    const logoUrl = toAbsoluteUrl(
+                        $card.find('img[data-testid^="icon-"]').attr('src') || $card.find('img').first().attr('src'),
+                        currentUrl,
+                    );
                     const likesRaw = $card.find('[class*="heart"] span, .ModernLikeButton-module-scss-module__xuujAq__heart span').text();
-                    const likes = parseInt(likesRaw.replace(/[^0-9]/g, ''), 10) || 0;
+                    const likesParsed = parseInt(likesRaw.replace(/[^0-9]/g, ''), 10);
 
                     const tags = [];
                     $card.find('.flex.flex-wrap.gap-2 span, .flex.flex-wrap.gap-2 a').each((i, tag) => {
@@ -229,17 +295,19 @@ await Actor.main(async () => {
                     });
 
                     // Platforms are usually links or tags with specific names
-                    const platforms = tags.filter(t => /Windows|Mac|Android|iOS|Linux|Online/i.test(t));
-                    const license = tags.find(t => /Free|Paid|Freemium|Open Source|Proprietary/i.test(t)) || null;
+                    const platforms = uniqueStrings(tags.filter((t) => PLATFORM_REGEX.test(t)));
+                    const license = tags.find((t) => LICENSE_REGEX.test(t)) || null;
+                    const pricing = license || null;
 
                     tools.push({
                         title,
                         url: url.split('#')[0],
                         description,
                         logoUrl,
-                        likes,
+                        likes: Number.isFinite(likesParsed) ? likesParsed : null,
                         platforms,
                         license,
+                        pricing,
                         _source: 'alternativeto',
                     });
                 });
@@ -285,14 +353,26 @@ await Actor.main(async () => {
 
                 try {
                     const item = extractDetailItem($, currentUrl);
-                    // Merge preview data with detail data
+                    // Merge preview data with detail data (detail wins if available)
+                    const mergedPlatforms = uniqueStrings([
+                        ...(Array.isArray(item.platforms) ? item.platforms : []),
+                        ...(Array.isArray(toolPreview.platforms) ? toolPreview.platforms : []),
+                    ]);
+
                     const finalItem = {
-                        ...toolPreview,
-                        ...item,
-                        description: item.description || toolPreview.description,
-                        url: currentUrl,
+                        _source: 'alternativeto',
+                        title: item.title || toolPreview.title || null,
+                        description: item.description || toolPreview.description || null,
+                        category: item.category || toolPreview.category || null,
+                        rating: item.rating ?? toolPreview.rating ?? null,
+                        pricing: item.pricing || toolPreview.pricing || toolPreview.license || null,
+                        license: item.license || toolPreview.license || item.pricing || null,
+                        likes: item.likes ?? toolPreview.likes ?? null,
+                        logoUrl: item.logoUrl || toolPreview.logoUrl || null,
+                        platforms: mergedPlatforms.length ? mergedPlatforms : null,
+                        developer: item.developer || toolPreview.developer || null,
+                        url: currentUrl.split('#')[0],
                     };
-                    delete finalItem._source;
 
                     await Actor.pushData(finalItem);
                     saved++;

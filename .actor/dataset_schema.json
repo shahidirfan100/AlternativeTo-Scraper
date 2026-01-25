@@ -23,6 +23,31 @@
         "type": ["string", "null"],
         "title": "Pricing"
       },
+      "license": {
+        "type": ["string", "null"],
+        "title": "License"
+      },
+      "likes": {
+        "type": ["integer", "null"],
+        "title": "Likes",
+        "minimum": 0
+      },
+      "platforms": {
+        "type": ["array", "null"],
+        "items": {
+          "type": "string"
+        },
+        "title": "Platforms"
+      },
+      "logoUrl": {
+        "type": ["string", "null"],
+        "format": "uri",
+        "title": "Logo URL"
+      },
+      "developer": {
+        "type": ["string", "null"],
+        "title": "Developer"
+      },
       "url": {
         "type": "string",
         "format": "uri",
@@ -45,7 +70,13 @@
           "category",
           "rating",
           "pricing",
-          "url"
+          "license",
+          "likes",
+          "platforms",
+          "developer",
+          "logoUrl",
+          "url",
+          "_source"
         ]
       },
       "display": {
@@ -71,9 +102,33 @@
             "label": "Pricing",
             "format": "text"
           },
+          "license": {
+            "label": "License",
+            "format": "text"
+          },
+          "likes": {
+            "label": "Likes",
+            "format": "number"
+          },
+          "platforms": {
+            "label": "Platforms",
+            "format": "array"
+          },
+          "developer": {
+            "label": "Developer",
+            "format": "text"
+          },
+          "logoUrl": {
+            "label": "Logo",
+            "format": "image"
+          },
           "url": {
             "label": "URL",
             "format": "link"
+          },
+          "_source": {
+            "label": "Source",
+            "format": "text"
           }
         }
       }

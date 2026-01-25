@@ -60,6 +60,7 @@ Each item in the dataset contains structured information about a software tool:
 | `platforms` | Array | List of supported platforms (e.g., Windows, Mac, Android). |
 | `license` | String | Specific license type (Free, Open Source, etc.). |
 | `developer` | String | The developer or publisher of the software. |
+| `_source` | String | Source identifier (`alternativeto`). |
 
 ---
 
@@ -114,11 +115,13 @@ Gather a large number of results across multiple pages with residential proxies.
   "category": "AI Image Generator",
   "rating": 4.8,
   "pricing": "Paid",
+  "license": "Commercial",
   "url": "https://alternativeto.net/software/midjourney/",
   "logoUrl": "https://d2.alternativeto.net/dist/icons/midjourney_234234.png",
   "likes": 1250,
   "platforms": ["Online"],
-  "license": "Paid"
+  "developer": "Midjourney Inc.",
+  "_source": "alternativeto"
 }
 ```
 
