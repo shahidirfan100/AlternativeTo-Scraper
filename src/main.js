@@ -36,7 +36,7 @@ const parseFirstFloat = (value) => {
     return match ? parseFloat(match[1]) : null;
 };
 
-const extractLabeledValue = ($container, labelRegex) => {
+const extractLabeledValue = ($, $container, labelRegex) => {
     let value = null;
     $container.find('*').each((_, el) => {
         if (value) return;
@@ -52,7 +52,11 @@ const extractLabeledValue = ($container, labelRegex) => {
         const afterColon = text.split(':').slice(1).join(':').trim();
         if (afterColon) {
             value = afterColon;
+            return;
         }
+
+        const siblingText = normalizeText($(el).next('a, span, div').first().text());
+        if (siblingText) value = siblingText;
     });
     return value;
 };
@@ -248,9 +252,9 @@ const crawler = new PlaywrightCrawler({
             const appTypes = extractTagsByHeader($card, 'Application Types');
             const platforms = extractTagsByHeader($card, 'Platforms');
             const origins = extractTagsByHeader($card, 'Made in');
-            const originLabelValue = extractLabeledValue($card, /(origin|made in)/i);
+            const originLabelValue = extractLabeledValue($, $card, /(origin|made in)/i);
 
-            const bestAlternativeText = extractLabeledValue($card, /best\\s*alternative/i)
+            const bestAlternativeText = extractLabeledValue($, $card, /best\s*alternative/i)
                 || normalizeText($card.find('.text-meta, .text-secondary, [class*="text-slate"]').filter((_, el) => /alternative/i.test(normalizeText($(el).text()))).first().text());
 
             const images = [];
