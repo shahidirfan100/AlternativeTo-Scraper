@@ -284,6 +284,7 @@ await Actor.main(async () => {
     });
 
     const DETAIL_CONCURRENCY = 5;
+    const runUserAgent = getRandomUA();
     let saved = 0;
     const detailRequests = [];
     const seenDetails = new Set();
@@ -300,6 +301,25 @@ await Actor.main(async () => {
         maxConcurrency: 2,
         requestHandlerTimeoutSecs: 60,
         navigationTimeoutSecs: 30,
+        launchContext: {
+            useChrome: true,
+            stealth: true,
+            launchOptions: {
+                args: [
+                    '--disable-blink-features=AutomationControlled',
+                    '--enable-webgl',
+                    '--use-gl=swiftshader',
+                    '--enable-accelerated-2d-canvas',
+                ],
+            },
+            contextOptions: {
+                userAgent: runUserAgent,
+                viewport: { width: 1366, height: 768 },
+                deviceScaleFactor: 1,
+                locale: 'en-US',
+                timezoneId: 'America/New_York',
+            },
+        },
         browserPoolOptions: {
             useFingerprints: true,
             fingerprintOptions: {
@@ -312,12 +332,11 @@ await Actor.main(async () => {
         },
         preNavigationHooks: [
             async ({ page }) => {
-                await page.setViewportSize({ width: 1366, height: 768 });
-                await page.setExtraHTTPHeaders({
+                await page.context().setExtraHTTPHeaders({
                     'accept-language': 'en-US,en;q=0.9',
                     'upgrade-insecure-requests': '1',
+                    referer: BASE_URL,
                 });
-                await page.setUserAgent(getRandomUA());
                 await page.route('**/*', (route) => {
                     const type = route.request().resourceType();
                     const url = route.request().url();
@@ -331,6 +350,9 @@ await Actor.main(async () => {
                 await page.addInitScript(() => {
                     Object.defineProperty(navigator, 'webdriver', { get: () => false });
                     window.chrome = { runtime: {} };
+                    Object.defineProperty(navigator, 'languages', { get: () => ['en-US', 'en'] });
+                    Object.defineProperty(navigator, 'plugins', { get: () => [1, 2, 3, 4, 5] });
+                    Object.defineProperty(navigator, 'deviceMemory', { get: () => 8 });
                 });
             },
         ],
