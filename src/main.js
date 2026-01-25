@@ -243,6 +243,30 @@ const fetchListPage = async (url, proxyConfiguration, attempt = 1) => {
     return cheerioLoad(html);
 };
 
+const fetchDetailPage = async (url, proxyConfiguration, attempt = 1) => {
+    const proxyUrl = proxyConfiguration ? await proxyConfiguration.newUrl() : undefined;
+    const response = await gotScraping({
+        url,
+        proxyUrl,
+        timeout: { request: 35000 },
+        headers: {
+            'user-agent': getRandomUA(),
+            accept: 'text/html,application/xhtml+xml,application/xml;q=0.9,image/webp,*/*;q=0.8',
+            'accept-language': 'en-US,en;q=0.9',
+            referer: BASE_URL,
+        },
+        http2: true,
+    });
+
+    const html = response.body;
+    if (html.includes('Just a moment') && html.includes('cloudflare')) {
+        if (attempt >= 3) throw new Error('Cloudflare challenge detected on detail page (after retries)');
+        await randomDelay(400, 800);
+        return fetchDetailPage(url, proxyConfiguration, attempt + 1);
+    }
+    return cheerioLoad(html);
+};
+
 await Actor.main(async () => {
     const rawInput = (await Actor.getInput()) ?? {};
     const { keyword, collectDetails, resultsWanted, maxPages, startUrls, proxyConfiguration } = normalizeInput(rawInput);
@@ -259,28 +283,23 @@ await Actor.main(async () => {
         apifyProxyGroups: ['RESIDENTIAL'],
     });
 
+    const DETAIL_CONCURRENCY = 5;
     let saved = 0;
-    let scheduledDetails = 0;
+    const detailRequests = [];
     const seenDetails = new Set();
     const seenPages = new Set();
-    const detailRequests = [];
 
-    const detailCrawler = new PlaywrightCrawler({
+    const listCrawler = new PlaywrightCrawler({
         proxyConfiguration: proxyConfig,
         maxRequestRetries: 3,
         useSessionPool: true,
         sessionPoolOptions: {
-            maxPoolSize: 6,
-            sessionOptions: { maxUsageCount: 3 },
+            maxPoolSize: 8,
+            sessionOptions: { maxUsageCount: 4 },
         },
-        maxConcurrency: 5,
-        requestHandlerTimeoutSecs: 75,
-        navigationTimeoutSecs: 35,
-        autoscaledPoolOptions: {
-            desiredConcurrency: 5,
-            maxConcurrency: 5,
-            minConcurrency: 2,
-        },
+        maxConcurrency: 2,
+        requestHandlerTimeoutSecs: 60,
+        navigationTimeoutSecs: 30,
         browserPoolOptions: {
             useFingerprints: true,
             fingerprintOptions: {
@@ -316,165 +335,147 @@ await Actor.main(async () => {
             },
         ],
         async requestHandler({ page, request, crawler: crawlerInstance }) {
-            if (saved >= resultsWanted) {
-                scheduledDetails = Math.max(0, scheduledDetails - 1);
-                return;
-            }
+            const { pageNo = 1 } = request.userData;
             const currentUrl = request.url;
-            const toolPreview = request.userData.toolPreview || {};
+            seenPages.add(currentUrl);
 
-            log.info(`Processing DETAIL: ${currentUrl}`);
-
+            log.info(`Processing LIST via Playwright: ${currentUrl} (Page ${pageNo})`);
             await page.goto(currentUrl, { waitUntil: 'domcontentloaded', timeout: 45000 });
-            await randomDelay();
+            await randomDelay(250, 600);
 
             if (await page.title().then((t) => t.includes('Just a moment'))) {
-                log.info('Cloudflare challenge detected on detail, waiting briefly...');
+                log.info('Cloudflare challenge on list, waiting briefly...');
                 await page.waitForTimeout(3000);
             }
 
             const content = await page.content();
             const $ = cheerioLoad(content);
 
-            try {
-                const item = extractDetailItem($, currentUrl);
-                // Merge preview data with detail data (detail wins if available)
-                const mergedPlatforms = uniqueStrings([
-                    ...(Array.isArray(item.platforms) ? item.platforms : []),
-                    ...(Array.isArray(toolPreview.platforms) ? toolPreview.platforms : []),
-                ]);
+            const tools = [];
+            $('div.flex.flex-col.w-full.gap-3, div[data-testid="app-card"]').each((_, el) => {
+                const $card = $(el);
+                const $titleLink = $card.find('h2 a, a.no-link-color').first();
+                const title = normalizeText($titleLink.text());
+                const href = $titleLink.attr('href');
+                const toolUrl = href ? toAbsoluteUrl(href, currentUrl) : null;
 
-                const finalItem = {
+                if (!toolUrl || !toolUrl.includes('/software/')) return;
+
+                const description = normalizeText($card.find('p, .Description-module-scss-module__text').first().text());
+                const logoUrl = toAbsoluteUrl(
+                    $card.find('img[data-testid^="icon-"]').attr('src') || $card.find('img').first().attr('src'),
+                    currentUrl,
+                );
+                const likesRaw = $card.find('[class*="heart"] span, .ModernLikeButton-module-scss-module__xuujAq__heart span').text();
+                const likesParsed = parseInt(likesRaw.replace(/[^0-9]/g, ''), 10);
+                const ratingRaw = $card.find('[itemprop="ratingValue"], [data-rating], [class*="rating"]').first().text();
+                const ratingParsed = parseFloat(normalizeText(ratingRaw));
+
+                const tags = [];
+                $card.find('.flex.flex-wrap.gap-2 span, .flex.flex-wrap.gap-2 a').each((i, tag) => {
+                    tags.push(normalizeText($(tag).text()));
+                });
+
+                const platforms = uniqueStrings(tags.filter((t) => PLATFORM_REGEX.test(t)));
+                const license = tags.find((t) => LICENSE_REGEX.test(t)) || null;
+                const pricing = license || null;
+
+                tools.push({
+                    title,
+                    url: toolUrl.split('#')[0],
+                    description,
+                    logoUrl,
+                    likes: Number.isFinite(likesParsed) ? likesParsed : null,
+                    rating: Number.isFinite(ratingParsed) ? ratingParsed : null,
+                    platforms,
+                    license,
+                    pricing,
                     _source: 'alternativeto',
-                    title: item.title || toolPreview.title || null,
-                    description: item.description || toolPreview.description || null,
-                    category: item.category || toolPreview.category || null,
-                    rating: item.rating ?? toolPreview.rating ?? null,
-                    pricing: item.pricing || toolPreview.pricing || toolPreview.license || null,
-                    license: item.license || toolPreview.license || item.pricing || null,
-                    likes: item.likes ?? toolPreview.likes ?? null,
-                    logoUrl: item.logoUrl || toolPreview.logoUrl || null,
-                    platforms: mergedPlatforms.length ? mergedPlatforms : null,
-                    developer: item.developer || toolPreview.developer || null,
-                    url: currentUrl.split('#')[0],
-                };
+                });
+            });
 
-                await Actor.pushData(finalItem);
-                saved++;
-                log.info(`Saved item ${saved}/${resultsWanted}: ${finalItem.title}`);
+            log.info(`Found ${tools.length} tool cards on list page`);
 
-                if (saved >= resultsWanted) {
-                    log.info('Results limit reached, stopping...');
-                    await crawlerInstance.autoscaledPool?.abort();
-                }
-            } catch (error) {
-                log.error(`Failed to extract detail for ${currentUrl}: ${error.message}`);
-                // Push at least the preview data if detail fails
-                if (toolPreview.title) {
-                    await Actor.pushData({ ...toolPreview, _source: 'alternativeto' });
+            for (const tool of tools) {
+                if (saved + detailRequests.length >= resultsWanted) break;
+
+                if (collectDetails) {
+                    if (!seenDetails.has(tool.url)) {
+                        seenDetails.add(tool.url);
+                        detailRequests.push(tool);
+                    }
+                } else if (!seenDetails.has(tool.url)) {
+                    seenDetails.add(tool.url);
+                    await Actor.pushData(tool);
                     saved++;
                 }
-            } finally {
-                scheduledDetails--;
+            }
+
+            if (saved + detailRequests.length < resultsWanted && pageNo < maxPages) {
+                const nextHref = $('a[rel="next"]').attr('href') || $('a:contains("Next")').attr('href');
+                const nextUrl = nextHref ? toAbsoluteUrl(nextHref, currentUrl) : null;
+                if (nextUrl && !seenPages.has(nextUrl)) {
+                    seenPages.add(nextUrl);
+                    await crawlerInstance.addRequests([{
+                        url: nextUrl,
+                        userData: { pageNo: pageNo + 1 },
+                    }]);
+                }
             }
         },
         failedRequestHandler({ request, error }) {
-            log.error(`Detail request ${request.url} failed: ${error.message}`);
+            log.error(`List request ${request.url} failed: ${error.message}`);
         },
     });
 
-    const listQueue = startUrls.map((url) => ({ url, pageNo: 1 }));
+    const startRequests = startUrls.map((url) => ({
+        url,
+        userData: { pageNo: 1 },
+    }));
 
-    while (listQueue.length && saved + scheduledDetails < resultsWanted) {
-        const { url, pageNo } = listQueue.shift();
-        if (pageNo > maxPages) break;
-        if (seenPages.has(url)) continue;
-        seenPages.add(url);
+    await listCrawler.run(startRequests);
 
-        log.info(`Processing LIST via HTTP: ${url} (Page ${pageNo})`);
-        let $;
-        try {
-            $ = await fetchListPage(url, proxyConfig);
-        } catch (err) {
-            log.warning(`HTTP fetch failed for ${url}: ${err.message}`);
-            continue;
-        }
+    if (collectDetails && detailRequests.length && saved < resultsWanted) {
+        log.info(`Fetching detail pages via HTTP (got-scraping). Pending: ${detailRequests.length}`);
+        for (let i = 0; i < detailRequests.length && saved < resultsWanted; i += DETAIL_CONCURRENCY) {
+            const batch = detailRequests.slice(i, i + DETAIL_CONCURRENCY);
+            await Promise.all(batch.map(async (toolPreview) => {
+                if (saved >= resultsWanted) return;
+                try {
+                    const $detail = await fetchDetailPage(toolPreview.url, proxyConfig);
+                    const item = extractDetailItem($detail, toolPreview.url);
+                    const mergedPlatforms = uniqueStrings([
+                        ...(Array.isArray(item.platforms) ? item.platforms : []),
+                        ...(Array.isArray(toolPreview.platforms) ? toolPreview.platforms : []),
+                    ]);
 
-        const tools = [];
-        $('div.flex.flex-col.w-full.gap-3, div[data-testid="app-card"]').each((_, el) => {
-            const $card = $(el);
-            const $titleLink = $card.find('h2 a, a.no-link-color').first();
-            const title = normalizeText($titleLink.text());
-            const href = $titleLink.attr('href');
-            const toolUrl = href ? toAbsoluteUrl(href, url) : null;
+                    const finalItem = {
+                        _source: 'alternativeto',
+                        title: item.title || toolPreview.title || null,
+                        description: item.description || toolPreview.description || null,
+                        category: item.category || toolPreview.category || null,
+                        rating: item.rating ?? toolPreview.rating ?? null,
+                        pricing: item.pricing || toolPreview.pricing || toolPreview.license || null,
+                        license: item.license || toolPreview.license || item.pricing || null,
+                        likes: item.likes ?? toolPreview.likes ?? null,
+                        logoUrl: item.logoUrl || toolPreview.logoUrl || null,
+                        platforms: mergedPlatforms.length ? mergedPlatforms : null,
+                        developer: item.developer || toolPreview.developer || null,
+                        url: toolPreview.url.split('#')[0],
+                    };
 
-            if (!toolUrl || !toolUrl.includes('/software/')) return;
-
-            const description = normalizeText($card.find('p, .Description-module-scss-module__text').first().text());
-            const logoUrl = toAbsoluteUrl(
-                $card.find('img[data-testid^="icon-"]').attr('src') || $card.find('img').first().attr('src'),
-                url,
-            );
-            const likesRaw = $card.find('[class*="heart"] span, .ModernLikeButton-module-scss-module__xuujAq__heart span').text();
-            const likesParsed = parseInt(likesRaw.replace(/[^0-9]/g, ''), 10);
-            const ratingRaw = $card.find('[itemprop="ratingValue"], [data-rating], [class*="rating"]').first().text();
-            const ratingParsed = parseFloat(normalizeText(ratingRaw));
-
-            const tags = [];
-            $card.find('.flex.flex-wrap.gap-2 span, .flex.flex-wrap.gap-2 a').each((i, tag) => {
-                tags.push(normalizeText($(tag).text()));
-            });
-
-            const platforms = uniqueStrings(tags.filter((t) => PLATFORM_REGEX.test(t)));
-            const license = tags.find((t) => LICENSE_REGEX.test(t)) || null;
-            const pricing = license || null;
-
-            tools.push({
-                title,
-                url: toolUrl.split('#')[0],
-                description,
-                logoUrl,
-                likes: Number.isFinite(likesParsed) ? likesParsed : null,
-                rating: Number.isFinite(ratingParsed) ? ratingParsed : null,
-                platforms,
-                license,
-                pricing,
-                _source: 'alternativeto',
-            });
-        });
-
-        log.info(`Found ${tools.length} tool cards on list page`);
-
-        for (const tool of tools) {
-            if (saved + scheduledDetails >= resultsWanted) break;
-
-            if (collectDetails) {
-                if (!seenDetails.has(tool.url)) {
-                    seenDetails.add(tool.url);
-                    scheduledDetails++;
-                    detailRequests.push({
-                        url: tool.url,
-                        userData: { toolPreview: tool },
-                    });
+                    await Actor.pushData(finalItem);
+                    saved++;
+                    log.info(`Saved item ${saved}/${resultsWanted}: ${finalItem.title}`);
+                } catch (err) {
+                    log.warning(`Detail fetch failed for ${toolPreview.url}: ${err.message}`);
+                    await Actor.pushData({ ...toolPreview, _source: 'alternativeto' });
+                    saved++;
+                } finally {
+                    await randomDelay(120, 320);
                 }
-            } else if (!seenDetails.has(tool.url)) {
-                seenDetails.add(tool.url);
-                await Actor.pushData(tool);
-                saved++;
-            }
+            }));
         }
-
-        if (saved + scheduledDetails < resultsWanted && pageNo < maxPages) {
-            const nextHref = $('a[rel="next"]').attr('href') || $('a:contains("Next")').attr('href');
-            const nextUrl = nextHref ? toAbsoluteUrl(nextHref, url) : null;
-            if (nextUrl && !seenPages.has(nextUrl)) {
-                listQueue.push({ url: nextUrl, pageNo: pageNo + 1 });
-            }
-        }
-    }
-
-    if (collectDetails && detailRequests.length) {
-        await detailCrawler.run(detailRequests);
     }
 
     log.info(`Scraping finished. Total items saved: ${saved}`);
