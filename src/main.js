@@ -30,6 +30,12 @@ const toAbsoluteUrl = (href, base = BASE_URL) => {
 
 const normalizeText = (text) => (text ? String(text).replace(/\s+/g, ' ').trim() : '');
 
+const parseFirstFloat = (value) => {
+    if (!value) return null;
+    const match = String(value).match(/(\d+(?:\.\d+)?)/);
+    return match ? parseFloat(match[1]) : null;
+};
+
 const buildSearchUrl = (keyword) => {
     const url = new URL(BASE_URL);
     if (keyword) url.searchParams.set('q', keyword);
@@ -228,8 +234,21 @@ const crawler = new PlaywrightCrawler({
                 images.push(toAbsoluteUrl($(img).attr('src'), currentUrl));
             });
 
-            const ratingRaw = $card.find('div.relative.flex-shrink-0').text();
-            const ratingParsed = parseFloat(normalizeText(ratingRaw));
+            const ratingContainer = $card.find('div.relative.flex-shrink-0, [data-testid*="rating"]').first();
+            const ratingCandidates = [];
+            if (ratingContainer.length) {
+                const ariaLabel = ratingContainer.attr('aria-label');
+                if (ariaLabel) ratingCandidates.push(ariaLabel);
+
+                ratingContainer.find('span, div').each((_, span) => {
+                    const txt = normalizeText($(span).text());
+                    if (txt) ratingCandidates.push(txt);
+                });
+
+                const directText = normalizeText(ratingContainer.text());
+                if (directText) ratingCandidates.push(directText);
+            }
+            const ratingParsed = ratingCandidates.map(parseFirstFloat).find((val) => Number.isFinite(val)) ?? null;
 
             tools.push({
                 title,
@@ -262,7 +281,31 @@ const crawler = new PlaywrightCrawler({
         }
 
         if (saved < resultsWanted && pageNo < maxPages) {
-            const nextHref = $('a[rel="next"]').attr('href') || $('a:contains("Next")').attr('href');
+            const nextHref = (() => {
+                const selectors = [
+                    'a[rel="next"]',
+                    'nav[aria-label*="pagination" i] a[aria-label*="next" i]',
+                    'nav[aria-label*="pagination" i] a:contains("Next")',
+                    'a[aria-label*="next" i]',
+                ];
+                for (const selector of selectors) {
+                    const href = $(selector).first().attr('href');
+                    if (href) return href;
+                }
+
+                const textMatch = $('a').filter((_, el) => /next/i.test(normalizeText($(el).text()))).first();
+                if (textMatch.length) return textMatch.attr('href');
+
+                const $paginationItems = $('nav[aria-label*="pagination" i] li');
+                const currentIdx = $paginationItems.toArray().findIndex((li) => $(li).attr('aria-current') === 'page');
+                if (currentIdx >= 0) {
+                    const href = $paginationItems.eq(currentIdx + 1).find('a').attr('href');
+                    if (href) return href;
+                }
+
+                return null;
+            })();
+
             const nextUrl = nextHref ? toAbsoluteUrl(nextHref, currentUrl) : null;
             if (nextUrl && !seenPages.has(nextUrl)) {
                 await crawlerInstance.addRequests([{
