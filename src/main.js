@@ -24,12 +24,10 @@ const BLOCKED_TITLES = [/access denied/i, /captcha/i, /forbidden/i, /verify/i];
 const BLOCKED_TYPES = new Set(['image', 'font', 'media', 'stylesheet']);
 const TRACKERS = ['google-analytics', 'googletagmanager', 'doubleclick', 'facebook', 'ads', 'pinterest'];
 const FAST_SCRAPE_CONFIG = Object.freeze({
-    collectDetails: false,
     fastListingMode: true,
     requestDelaySecs: 0,
     maxConcurrency: 5,
 });
-let useAggressiveDetailEnrichment = false;
 
 const REGION_DISPLAY = new Intl.DisplayNames(['en'], { type: 'region' });
 
@@ -585,47 +583,6 @@ const needsEnrichmentRetry = (items) => {
     return sparseCount >= Math.ceil(items.length * 0.2);
 };
 
-const needsDetailEnrichment = (item, pageKind) => {
-    if (!item?.url) return false;
-    if (!FAST_SCRAPE_CONFIG.collectDetails) return false;
-    if (isSparseItem(item)) return true;
-    if (!proxyEnabled) return false;
-    if (pageKind === PAGE_KIND.SOFTWARE) return false;
-
-    if (useAggressiveDetailEnrichment) {
-        const missingScalarField = [
-            item.description,
-            item.category,
-            item.pricing,
-            item.cost,
-            item.license,
-            item.developer,
-            item.logoUrl,
-        ].some((value) => !txt(value));
-
-        const missingArrayField = !Array.isArray(item.platforms)
-            || item.platforms.length === 0
-            || !Array.isArray(item.applicationTypes)
-            || item.applicationTypes.length === 0
-            || !Array.isArray(item.images)
-            || item.images.length === 0
-            || !Array.isArray(item.origins)
-            || item.origins.length === 0;
-
-        if (missingScalarField || missingArrayField) return true;
-    }
-
-    let criticalMissing = 0;
-    if (!txt(item.description)) criticalMissing += 1;
-    if (!txt(item.category)) criticalMissing += 1;
-    if (!txt(item.pricing) && !txt(item.cost) && !txt(item.license)) criticalMissing += 1;
-    if (!Array.isArray(item.platforms) || item.platforms.length === 0) criticalMissing += 1;
-    if (!Array.isArray(item.applicationTypes) || item.applicationTypes.length === 0) criticalMissing += 1;
-    if (!txt(item.logoUrl)) criticalMissing += 1;
-
-    return criticalMissing >= 3;
-};
-
 const blocked = ($, html) => {
     const title = txt($('title').first().text());
     if (BLOCKED_TITLES.some((re) => re.test(title))) return true;
@@ -701,14 +658,12 @@ const proxyEnabled = Boolean(
     selectedProxyInput.useApifyProxy
     || (Array.isArray(selectedProxyInput.proxyUrls) && selectedProxyInput.proxyUrls.length > 0),
 );
-useAggressiveDetailEnrichment = proxyEnabled;
 
 log.info('Starting AlternativeTo Playwright actor', {
     startUrls: input.startUrls.length,
     resultsWanted: input.resultsWanted,
     maxPages: input.maxPages,
     proxyEnabled,
-    collectDetails: FAST_SCRAPE_CONFIG.collectDetails,
     fastListingMode: FAST_SCRAPE_CONFIG.fastListingMode,
     requestDelaySecs: FAST_SCRAPE_CONFIG.requestDelaySecs,
     maxConcurrency: input.maxConcurrency,
@@ -761,24 +716,6 @@ const nextPage = ($, currentUrl, pageKind, extractedCount) => {
 
 const router = createPlaywrightRouter();
 
-router.addHandler('DETAIL', async ({ page, request }) => {
-    const seed = cleanItem(request.userData.seed);
-    if (!seed?.url || pushed >= input.resultsWanted) return;
-
-    await page.waitForLoadState('domcontentloaded', { timeout: 10000 });
-    await page.waitForSelector('body', { timeout: 10000 });
-    await page.waitForLoadState('networkidle', { timeout: 4500 }).catch(() => {});
-
-    const currentUrl = request.loadedUrl || request.url;
-    const { $ } = await getStablePageContent(page, currentUrl);
-
-    const apiPayloads = pageApiPayloads.get(page) || [];
-    const extracted = extractFromPage({ $, pageUrl: currentUrl, includeCards: false, apiPayloads });
-    const detail = extracted.find((item) => item?.url === seed.url) || extracted[0] || null;
-    const merged = mergeItem(seed, detail);
-    await push(merged);
-});
-
 router.addDefaultHandler(async ({ page, request }) => {
     const currentUrl = request.loadedUrl || request.url;
     const pageKind = classifyPageKind(currentUrl);
@@ -800,25 +737,19 @@ router.addDefaultHandler(async ({ page, request }) => {
         extracted = mergeItemSets(extracted, enriched);
     }
     const fresh = extracted.filter((it) => it?.url && !discovered.has(it.url));
-    const detailRequests = [];
+    log.info('List page parsed', {
+        url: currentUrl,
+        pageNo,
+        extracted: extracted.length,
+        fresh: fresh.length,
+        pushed,
+    });
 
     for (const item of fresh) {
         if (pushed >= input.resultsWanted) break;
         discovered.add(item.url);
-        if (needsDetailEnrichment(item, pageKind)) {
-            detailRequests.push({
-                url: item.url,
-                uniqueKey: `detail:${item.url}`,
-                userData: { label: 'DETAIL', seed: item },
-            });
-        } else {
-            await push(item);
-        }
+        await push(item);
         if (discovered.size >= input.resultsWanted) break;
-    }
-
-    if (detailRequests.length) {
-        await crawler.addRequests(detailRequests, { forefront: true });
     }
 
     const done = pushed >= input.resultsWanted;
@@ -826,6 +757,7 @@ router.addDefaultHandler(async ({ page, request }) => {
 
     const n = nextPage($, currentUrl, pageKind, fresh.length);
     if (!n || seenPages.has(n)) return;
+    log.info('Queueing next page', { from: currentUrl, next: n, nextPageNo: pageNo + 1 });
     await crawler.addRequests([{ url: n, uniqueKey: `list:${n}`, userData: { label: 'LIST', pageNo: pageNo + 1, seedStart: false } }]);
 });
 
@@ -910,14 +842,6 @@ const crawler = new PlaywrightCrawler({
                     blockedUrl: failedUrl,
                     fallbackCount: fallbacks.length,
                 });
-            }
-        }
-        
-        if (request.userData.label === 'DETAIL' && pushed < input.resultsWanted) {
-            const seed = cleanItem(request.userData.seed);
-            if (seed?.url && discovered.has(seed.url)) {
-                await push(seed);
-                log.info(`Pushed seed data for failed detail page: ${seed.url}`);
             }
         }
         
