@@ -1,10 +1,10 @@
 {
-  "startUrl": "https://alternativeto.net/category/ai-tools/ai-image-generator/",
+  "startUrls": [
+    {
+      "url": "https://alternativeto.net/category/ai-tools/ai-image-generator/"
+    }
+  ],
   "keyword": "AI image generator",
-  "results_wanted": 50,
-  "max_pages": 20,
-  "proxyConfiguration": {
-    "useApifyProxy": true,
-    "apifyProxyGroups": ["RESIDENTIAL"]
-  }
+  "results_wanted": 20,
+  "max_pages": 3
 }

@@ -25,28 +25,9 @@ const BLOCKED_TYPES = new Set(['image', 'font', 'media', 'stylesheet']);
 const TRACKERS = ['google-analytics', 'googletagmanager', 'doubleclick', 'facebook', 'ads', 'pinterest'];
 const FAST_SCRAPE_CONFIG = Object.freeze({
     fastListingMode: true,
-    requestDelaySecs: 2,
-    maxConcurrency: 3,
+    requestDelaySecs: 0,
+    maxConcurrency: 5,
 });
-
-// Stealth Firefox user agents for rotation
-const USER_AGENTS = [
-    'Mozilla/5.0 (Windows NT 10.0; Win64; x64; rv:133.0) Gecko/20100101 Firefox/133.0',
-    'Mozilla/5.0 (Macintosh; Intel Mac OS X 14.7; rv:133.0) Gecko/20100101 Firefox/133.0',
-    'Mozilla/5.0 (X11; Linux x86_64; rv:133.0) Gecko/20100101 Firefox/133.0',
-    'Mozilla/5.0 (Windows NT 10.0; Win64; x64; rv:132.0) Gecko/20100101 Firefox/132.0',
-    'Mozilla/5.0 (Macintosh; Intel Mac OS X 14.6; rv:132.0) Gecko/20100101 Firefox/132.0',
-];
-const getRandomUserAgent = () => USER_AGENTS[Math.floor(Math.random() * USER_AGENTS.length)];
-
-// Randomized viewports for stealth
-const VIEWPORTS = [
-    { width: 1920, height: 1080 },
-    { width: 1366, height: 768 },
-    { width: 1536, height: 864 },
-    { width: 1440, height: 900 },
-];
-const getRandomViewport = () => VIEWPORTS[Math.floor(Math.random() * VIEWPORTS.length)];
 
 const REGION_DISPLAY = new Intl.DisplayNames(['en'], { type: 'region' });
 
@@ -66,10 +47,6 @@ const uniq = (value) => {
 const absUrl = (href, base = BASE_URL) => {
     const clean = txt(href);
     if (!clean) return null;
-    // Handle objects being passed as href
-    if (typeof href === 'object' && href !== null) {
-        return null;
-    }
     try {
         return new URL(clean, base).href;
     } catch {
@@ -229,10 +206,10 @@ const cleanItem = (raw) => {
         cost: cost || null,
         license: license || null,
         likes: Number.isFinite(likes) ? likes : null,
-        platforms: uniq(raw.platforms || []).length > 0 ? uniq(raw.platforms || []) : null,
+        platforms: uniq(raw.platforms || []) || null,
         applicationTypes: applicationTypes.length ? applicationTypes : null,
         images: images.length ? images : null,
-        origins: uniq(raw.origins || []).length > 0 ? uniq(raw.origins || []) : null,
+        origins: uniq(raw.origins || []) || null,
         bestAlternative: txt(raw.bestAlternative) || null,
         developer: txt(raw.developer) || null,
         logoUrl: absUrl(raw.logoUrl, url),
@@ -245,12 +222,6 @@ const mergeItem = (a, b) => {
     if (!a) return b;
     if (!b) return a;
     const pick = (current, incoming) => (txt(current) ? current : (txt(incoming) ? incoming : null));
-    
-    // Helper to merge arrays and return null if empty
-    const mergeArrays = (arr1, arr2) => {
-        const merged = uniq([...(arr1 || []), ...(arr2 || [])]);
-        return merged.length > 0 ? merged : null;
-    };
 
     return {
         ...a,
@@ -265,10 +236,10 @@ const mergeItem = (a, b) => {
         logoUrl: pick(a.logoUrl, b.logoUrl),
         rating: Number.isFinite(a.rating) ? a.rating : (Number.isFinite(b.rating) ? b.rating : null),
         likes: Number.isFinite(a.likes) ? a.likes : (Number.isFinite(b.likes) ? b.likes : null),
-        platforms: mergeArrays(a.platforms, b.platforms),
-        applicationTypes: mergeArrays(a.applicationTypes, b.applicationTypes),
-        images: mergeArrays(a.images, b.images),
-        origins: mergeArrays(a.origins, b.origins),
+        platforms: uniq([...(a.platforms || []), ...(b.platforms || [])]) || null,
+        applicationTypes: uniq([...(a.applicationTypes || []), ...(b.applicationTypes || [])]) || null,
+        images: uniq([...(a.images || []), ...(b.images || [])]) || null,
+        origins: uniq([...(a.origins || []), ...(b.origins || [])]) || null,
     };
 };
 
@@ -365,47 +336,28 @@ const mapNextFlightAppToItem = (app) => {
     const url = app?.urlName ? `https://alternativeto.net/software/${app.urlName}/` : null;
     if (!url) return null;
 
-    const appTypes = uniq((app.appTypes || []).map((t) => t?.name || t?.appType || t));
-    const platforms = uniq((app.platforms || []).map((p) => p?.name || p?.platform || p));
-    const images = uniq((app.screenshots || []).map((s) => s?.url309x197 || s?.url618x394 || s?.url1200x1200 || s?.url || s));
-    const country = countryFromCode(app.company?.countryCode || app.countryCode);
-    const bestAlternative = app.topAlternatives?.[0]?.name || app.topAlternative?.name || null;
-    
-    // Extract rating with multiple fallbacks
-    const rating = app.rating?.rating ?? app.rating?.value ?? app.ratingValue ?? app.rating ?? app.score ?? null;
-    
-    // Extract likes with fallbacks
-    const likes = app.likes ?? app.likeCount ?? app.votes ?? app.voteCount ?? app.upvotes ?? null;
-    
-    // Extract pricing/cost/license with fallbacks
-    const licenseCost = app.licenseCost ?? app.cost ?? app.pricing ?? app.price ?? null;
-    const licenseModel = app.licenseModel ?? app.license ?? app.licenseType ?? null;
-    
-    // Extract description with fallbacks
-    const description = app.shortDescriptionOrTagLine ?? app.shortDescription ?? app.description ?? app.tagline ?? app.summary ?? null;
-    
-    // Extract developer/company with fallbacks
-    const developer = app.company?.name ?? app.companyName ?? app.developer ?? app.creator ?? app.author?.name ?? null;
-    
-    // Extract logo with fallbacks
-    const logoUrl = app.icon?.url140 ?? app.icon?.url70 ?? app.icon?.url280 ?? app.icon?.url40 ?? app.iconUrl ?? app.icon ?? app.logo ?? null;
+    const appTypes = uniq((app.appTypes || []).map((t) => t?.name || t?.appType));
+    const platforms = uniq((app.platforms || []).map((p) => p?.name));
+    const images = uniq((app.screenshots || []).map((s) => s?.url309x197 || s?.url618x394 || s?.url1200x1200));
+    const country = countryFromCode(app.company?.countryCode);
+    const bestAlternative = app.topAlternatives?.[0]?.name || null;
 
     return cleanItem({
-        title: app.name ?? app.title ?? app.displayName,
-        description,
+        title: app.name,
+        description: app.shortDescriptionOrTagLine,
         url,
-        rating,
-        likes,
-        pricing: licenseCost,
-        cost: uniq([licenseCost, licenseModel]).join(' | '),
-        license: licenseModel,
-        platforms: platforms.length ? platforms : null,
-        applicationTypes: appTypes.length ? appTypes : null,
-        images: images.length ? images : null,
-        origins: country ? [country] : null,
+        rating: app.rating?.rating,
+        likes: app.likes,
+        pricing: app.licenseCost,
+        cost: uniq([app.licenseCost, app.licenseModel]).join(' | '),
+        license: app.licenseModel,
+        platforms,
+        applicationTypes: appTypes,
+        images,
+        origins: uniq([country]),
         bestAlternative,
-        developer,
-        logoUrl,
+        developer: app.company?.name,
+        logoUrl: app.icon?.url140 || app.icon?.url70 || app.icon?.url280 || app.icon?.url40,
         _source: 'next-flight',
     });
 };
@@ -450,27 +402,25 @@ const fromObjectTree = (root, pageUrl, source) => {
         const urlNameUrl = node.urlName ? `https://alternativeto.net/software/${node.urlName}/` : null;
         const url = toolUrl(node.url ?? node.href ?? node.link ?? node.canonicalUrl ?? urlNameUrl, pageUrl);
         if (url) {
-            const appTypes = uniq((node.appTypes || []).map((entry) => entry?.name || entry?.appType || entry));
-            const screenshots = uniq((node.screenshots || []).map((shot) => shot?.url309x197 || shot?.url618x394 || shot?.url1200x1200 || shot));
-            const platformsList = (node.platforms || []).length ? (node.platforms || []).map((p) => p?.name || p) : (node.operatingSystem ?? node.supportedPlatforms);
-            const companyCountry = countryFromCode(node.company?.countryCode || node.countryCode);
-            
+            const appTypes = uniq((node.appTypes || []).map((entry) => entry?.name || entry?.appType));
+            const screenshots = uniq((node.screenshots || []).map((shot) => shot?.url309x197 || shot?.url618x394 || shot?.url1200x1200));
+            const companyCountry = countryFromCode(node.company?.countryCode);
             const item = cleanItem({
-                title: node.name ?? node.title ?? node.alternateName ?? node.displayName,
-                description: node.description ?? node.summary ?? node.abstract ?? node.tagline ?? node.shortDescription ?? node.shortDescriptionOrTagLine,
+                title: node.name ?? node.title ?? node.alternateName,
+                description: node.description ?? node.summary ?? node.abstract ?? node.tagline,
                 url,
-                rating: node.aggregateRating?.ratingValue ?? node.ratingValue ?? node.rating?.rating ?? node.rating ?? node.score,
-                likes: node.likes ?? node.votes ?? node.voteCount ?? node.upvotes ?? node.likeCount,
-                pricing: node.licenseCost ?? node.pricing ?? node.cost ?? node.price,
-                cost: uniq([node.licenseCost, node.licenseModel, node.cost, node.pricing, node.price]).join(' | '),
-                license: node.licenseModel ?? node.license ?? node.priceModel ?? node.licenseType,
-                platforms: platformsList,
-                applicationTypes: appTypes.length ? appTypes : uniq([node.applicationCategory, node.category, ...(node.categories || []), ...(node.tags || [])]),
+                rating: node.aggregateRating?.ratingValue ?? node.ratingValue ?? node.rating ?? node.score,
+                likes: node.likes ?? node.votes ?? node.voteCount ?? node.upvotes,
+                pricing: node.licenseCost ?? node.pricing ?? node.cost,
+                cost: uniq([node.licenseCost, node.licenseModel, node.cost, node.pricing]).join(' | '),
+                license: node.licenseModel ?? node.license ?? node.priceModel,
+                platforms: (node.platforms || []).length ? (node.platforms || []).map((p) => p?.name || p) : (node.operatingSystem ?? node.supportedPlatforms),
+                applicationTypes: appTypes.length ? appTypes : (node.applicationCategory ?? node.categories ?? node.tags),
                 images: screenshots,
-                origins: uniq([node.origin, node.country, node.madeIn, companyCountry, node.location]),
-                bestAlternative: node.topAlternatives?.[0]?.name ?? node.topAlternative?.name,
-                developer: node.company?.name ?? node.companyName ?? node.author?.name ?? node.provider?.name ?? node.publisher?.name ?? node.developer?.name ?? node.organization?.name ?? node.creator?.name,
-                logoUrl: node.icon?.url140 ?? node.icon?.url70 ?? node.icon?.url280 ?? node.icon?.url40 ?? node.iconUrl ?? node.image?.url ?? node.image ?? node.logo?.url ?? node.logo ?? node.thumbnailUrl ?? node.thumbnail,
+                origins: uniq([node.origin, node.country, node.madeIn, companyCountry]),
+                bestAlternative: node.topAlternatives?.[0]?.name,
+                developer: node.company?.name ?? node.author?.name ?? node.provider?.name ?? node.publisher?.name ?? node.developer?.name ?? node.organization?.name,
+                logoUrl: node.icon?.url140 ?? node.icon?.url70 ?? node.icon?.url280 ?? node.icon?.url40 ?? node.image?.url ?? node.image ?? node.logo?.url ?? node.logo ?? node.thumbnailUrl,
                 _source: source,
             });
             if (item) out.set(item.url, mergeItem(out.get(item.url), item));
@@ -534,66 +484,33 @@ const parseCostLicense = (values) => {
 
 const extractCards = ($, pageUrl) => {
     const out = new Map();
-    const cards = $('article.app-item-container, li[data-testid^="item-"], div[data-testid="app-listing-item"], article[class*="app"], li[class*="item"]');
+    const cards = $('article.app-item-container, li[data-testid^="item-"], div[data-testid="app-listing-item"]');
 
     cards.each((_, el) => {
         const $card = $(el);
-        const $a = $card.find('h2 a[href*="/software/"], h3 a[href*="/software/"], a.no-link-color[href*="/software/"], a[href*="/software/"]').first();
+        const $a = $card.find('h2 a[href*="/software/"], h3 a[href*="/software/"], a.no-link-color[href*="/software/"]').first();
         const url = toolUrl($a.attr('href'), pageUrl);
         if (!url) return;
 
         const cardText = txt($card.text());
-        
-        // Extract cost/pricing/license with multiple methods
-        const costValues = valuesFromHeading($, $card, /cost\s*\/\s*license|pricing|license|price/i);
+        const costValues = valuesFromHeading($, $card, /cost\s*\/\s*license|pricing|license/i);
         const { pricing, cost, license } = parseCostLicense(costValues);
-        
-        // Extract likes with regex fallback
-        const likes = intVal((cardText.match(/(\d[\d,]*)\s*likes?/i) || [])[1]) || intVal($card.find('[class*="like"], [data-testid*="like"]').text());
-        
-        // Extract rating with multiple selectors
-        const ratingText = $card.find('[aria-label*="rating" i], [class*="rating"], [class*="score"], [data-testid*="rating"]').first().text();
-        const rating = floatVal(ratingText) || floatVal(cardText.match(/rating[:\s]*(\d+\.?\d*)/i)?.[1]);
-        
-        // Extract description with multiple selectors
-        const description = txt(
-            $card.find('[id*="description"] p, p[class*="description"], [class*="description"], p[class*="tagline"], [class*="summary"]').first().text()
-        ) || txt($card.find('p').first().text());
+        const likes = intVal((cardText.match(/(\d[\d,]*)\s*likes?/i) || [])[1]);
 
-        // Extract category from card
-        const category = txt($card.find('[class*="category"], [data-testid*="category"]').first().text());
-        
-        // Extract developer/company
-        const developer = txt($card.find('[class*="company"], [class*="developer"], [data-testid*="company"], [class*="author"]').first().text());
-        
-        // Try to get better description if first attempt was empty
-        let finalDescription = description;
-        if (!finalDescription) {
-            // Try alternative description selectors
-            finalDescription = txt($card.find('[class*="summary"], [class*="excerpt"], .app-description, [data-description]').first().text());
-        }
-        
-        // Extract logo with proper error handling
-        let logoSrc = $card.find('img').first().attr('src') || $card.find('img').first().attr('data-src');
-        if (logoSrc && typeof logoSrc === 'object') logoSrc = null; // Handle object responses
-        const logoUrl = logoSrc ? absUrl(logoSrc, pageUrl) : null;
-        
         const item = cleanItem({
-            title: txt($a.text()) || txt($card.find('h2, h3, h4, [class*="title"]').first().text()),
-            description: finalDescription,
+            title: txt($a.text()) || txt($card.find('h2, h3').first().text()),
+            description: txt($card.find('[id*="description"] p, p[class*="description"], p').first().text()),
             url,
-            logoUrl,
+            logoUrl: absUrl($card.find('img').first().attr('src'), pageUrl),
             likes,
-            rating,
+            rating: floatVal($card.find('[aria-label*="rating" i], [class*="rating"], [class*="score"]').first().text()),
             pricing,
             cost,
             license,
-            category: category || null,
-            developer: developer || null,
-            platforms: tagsFromHeader($, $card, /platforms?|operating system/i),
-            applicationTypes: tagsFromHeader($, $card, /(application\s*types?|application\s*type|categories?|tags?)/i),
-            origins: tagsFromHeader($, $card, /(origin|made in|country|location)/i),
-            bestAlternative: labeledValue($, $card, /best\s*alternative|top\s*alternative/i),
+            platforms: tagsFromHeader($, $card, /platforms?/i),
+            applicationTypes: tagsFromHeader($, $card, /(application\s*types?|application\s*type|categories?)/i),
+            origins: tagsFromHeader($, $card, /(origin|made in|country)/i),
+            bestAlternative: labeledValue($, $card, /best\s*alternative/i),
             _source: 'html',
         });
         if (item) out.set(item.url, mergeItem(out.get(item.url), item));
@@ -617,59 +534,23 @@ const extractFromCapturedApiPayloads = (payloads, pageUrl) => {
 
 const extractFromPage = ({ $, pageUrl, includeCards, apiPayloads = [] }) => {
     const out = new Map();
-    const mergeMany = (items, source) => {
-        for (const item of items) {
-            if (item?.url) {
-                out.set(item.url, mergeItem(out.get(item.url), item));
-            }
-        }
+    const mergeMany = (items) => {
+        for (const item of items) if (item?.url) out.set(item.url, mergeItem(out.get(item.url), item));
     };
 
-    // Priority order: API data first, then structured data, then HTML
-    const apiItems = extractFromCapturedApiPayloads(apiPayloads, pageUrl);
-    mergeMany(apiItems, 'api');
-    
-    const nextFlightItems = extractFromNextFlight($);
-    mergeMany(nextFlightItems, 'nextFlight');
+    mergeMany(extractFromNextFlight($));
+    mergeMany(extractFromCapturedApiPayloads(apiPayloads, pageUrl));
 
     const nextData = parseJson($('script#__NEXT_DATA__').first().text());
-    if (nextData) {
-        const nextDataItems = fromObjectTree(nextData, pageUrl, '__NEXT_DATA__');
-        mergeMany(nextDataItems, 'nextData');
-    }
+    if (nextData) mergeMany(fromObjectTree(nextData, pageUrl, '__NEXT_DATA__'));
 
     $('script[type="application/ld+json"]').each((_, el) => {
         const json = parseJson($(el).text());
-        if (json) {
-            const jsonLdItems = fromObjectTree(json, pageUrl, 'json-ld');
-            mergeMany(jsonLdItems, 'jsonLd');
-        }
+        if (json) mergeMany(fromObjectTree(json, pageUrl, 'json-ld'));
     });
 
-    if (includeCards) {
-        const cardItems = extractCards($, pageUrl);
-        mergeMany(cardItems, 'html');
-    }
-    
-    const results = [...out.values()];
-    
-    // Debug: Log extraction stats
-    if (results.length > 0) {
-        const withDescription = results.filter(r => r.description).length;
-        const withRating = results.filter(r => r.rating).length;
-        const withPlatforms = results.filter(r => r.platforms?.length > 0).length;
-        const withCategory = results.filter(r => r.category).length;
-        const withPricing = results.filter(r => r.pricing).length;
-        log.debug(`Extracted ${results.length} items: ${withDescription} desc, ${withRating} rating, ${withPlatforms} platforms, ${withCategory} category, ${withPricing} pricing`);
-        
-        // Log items with incomplete data for debugging
-        const incomplete = results.filter(r => !r.description || !r.category || !r.pricing);
-        if (incomplete.length > 0) {
-            log.debug(`${incomplete.length} items with incomplete data:`, incomplete.map(r => r.title).slice(0, 5));
-        }
-    }
-    
-    return results;
+    if (includeCards) mergeMany(extractCards($, pageUrl));
+    return [...out.values()];
 };
 
 const mergeItemSets = (...itemSets) => {
@@ -771,23 +652,7 @@ const normalizeInput = (raw = {}) => {
 };
 
 const input = normalizeInput((await Actor.getInput()) || {});
-
-// Detect if running on Apify platform or locally
-const isLocal = Actor.isAtHome();
-let selectedProxyInput;
-if (isLocal) {
-    // Running locally - no proxy
-    log.info('Running locally - proxy disabled');
-    selectedProxyInput = { useApifyProxy: false };
-} else {
-    // Running on Apify platform - use proxy from input or default to RESIDENTIAL
-    selectedProxyInput = input.proxyConfiguration || {
-        useApifyProxy: true,
-        apifyProxyGroups: ['RESIDENTIAL'],
-    };
-    log.info('Running on Apify platform - proxy enabled');
-}
-
+const selectedProxyInput = input.proxyConfiguration || { useApifyProxy: false };
 const proxyConfiguration = await Actor.createProxyConfiguration(selectedProxyInput);
 const proxyEnabled = Boolean(
     selectedProxyInput.useApifyProxy
@@ -859,16 +724,6 @@ router.addDefaultHandler(async ({ page, request }) => {
 
     await page.waitForLoadState('domcontentloaded', { timeout: 10000 });
     await page.waitForSelector('body', { timeout: 10000 });
-    
-    // Simulate human behavior with mouse movement and scroll
-    try {
-        await page.mouse.move(200 + Math.random() * 400, 200 + Math.random() * 400);
-        await page.evaluate(() => window.scrollTo(0, 300 + Math.random() * 200));
-        await page.waitForTimeout(300 + Math.random() * 500);
-    } catch (e) {
-        // Ignore mouse/scroll errors
-    }
-    
     let { html, $ } = await getStablePageContent(page, currentUrl);
 
     const apiPayloads = pageApiPayloads.get(page) || [];
@@ -902,67 +757,28 @@ router.addDefaultHandler(async ({ page, request }) => {
 
     const n = nextPage($, currentUrl, pageKind, fresh.length);
     if (!n || seenPages.has(n)) return;
-    
-    // Add random delay before queueing next page to appear more human-like
-    const delay = 2000 + Math.random() * 3000;
-    await new Promise(resolve => setTimeout(resolve, delay));
-    
     log.info('Queueing next page', { from: currentUrl, next: n, nextPageNo: pageNo + 1 });
-    await crawler.addRequests([{ 
-        url: n, 
-        uniqueKey: `list:${n}`, 
-        userData: { label: 'LIST', pageNo: pageNo + 1, seedStart: false } 
-    }]);
+    await crawler.addRequests([{ url: n, uniqueKey: `list:${n}`, userData: { label: 'LIST', pageNo: pageNo + 1, seedStart: false } }]);
 });
 
 const crawler = new PlaywrightCrawler({
     requestHandler: router,
     proxyConfiguration,
     maxRequestsPerCrawl,
-    launchContext: {
-        launcher: firefox,
-        launchOptions: {
-            headless: true,
-            firefoxUserPrefs: {
-                'dom.webdriver.enabled': false,
-                'useAutomationExtension': false,
-                'general.platform.override': '',
-            },
-        },
-        userAgent: getRandomUserAgent(),
-    },
-    browserPoolOptions: {
-        useFingerprints: false,
-        preLaunchHooks: [
-            async (_pageId, launchContext) => {
-                const viewport = getRandomViewport();
-                if (!launchContext.launchOptions) launchContext.launchOptions = {};
-                launchContext.launchOptions.viewport = viewport;
-                // Rotate user agent per browser instance
-                launchContext.userAgent = getRandomUserAgent();
-            },
-        ],
-    },
+    launchContext: { launcher: firefox, launchOptions: { headless: true } },
+    browserPoolOptions: { useFingerprints: false },
     useSessionPool: true,
     persistCookiesPerSession: true,
     sessionPoolOptions: {
-        maxPoolSize: 15,
-        sessionOptions: {
-            maxUsageCount: 30,
-            maxErrorScore: 3,
-        },
+        maxPoolSize: Math.max(input.maxConcurrency * 4, 20),
     },
     maxConcurrency: input.maxConcurrency,
-    maxRequestRetries: 1,
-    navigationTimeoutSecs: 25,
-    requestHandlerTimeoutSecs: 45,
+    maxRequestRetries: 2,
+    navigationTimeoutSecs: 30,
+    requestHandlerTimeoutSecs: 60,
     sameDomainDelaySecs: FAST_SCRAPE_CONFIG.requestDelaySecs,
     preNavigationHooks: [
-        async ({ page, request }, gotoOptions) => {
-            // Small random delay before navigation (500-1500ms)
-            const navDelay = 500 + Math.random() * 1000;
-            await new Promise(resolve => setTimeout(resolve, navDelay));
-            
+        async ({ page }, gotoOptions) => {
             if (!routedPages.has(page)) {
                 await page.route('**/*', async (route) => {
                     const req = route.request();
@@ -997,21 +813,7 @@ const crawler = new PlaywrightCrawler({
                     }
                 });
             }
-            
-            // Set realistic headers with randomization
-            await page.setExtraHTTPHeaders({
-                'Accept-Language': 'en-US,en;q=0.9',
-                'Accept': 'text/html,application/xhtml+xml,application/xml;q=0.9,image/avif,image/webp,*/*;q=0.8',
-                'Accept-Encoding': 'gzip, deflate, br',
-                'DNT': '1',
-                'Connection': 'keep-alive',
-                'Upgrade-Insecure-Requests': '1',
-                'Sec-Fetch-Dest': 'document',
-                'Sec-Fetch-Mode': 'navigate',
-                'Sec-Fetch-Site': 'none',
-                'Cache-Control': 'max-age=0',
-            });
-            
+            await page.setExtraHTTPHeaders({ 'Accept-Language': 'en-US,en;q=0.9' });
             gotoOptions.waitUntil = 'domcontentloaded';
         },
     ],

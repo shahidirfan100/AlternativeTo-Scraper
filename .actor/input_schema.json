@@ -13,6 +13,11 @@
         {
           "url": "https://alternativeto.net/category/ai-tools/ai-image-generator/"
         }
+      ],
+      "prefill": [
+        {
+          "url": "https://alternativeto.net/category/ai-tools/ai-image-generator/"
+        }
       ]
     },
     "keyword": {
@@ -20,15 +25,17 @@
       "type": "string",
       "description": "Search keyword used when explicit start URLs are not provided.",
       "default": "AI image generator",
-      "editor": "textfield"
+      "editor": "textfield",
+      "prefill": "AI image generator"
     },
     "results_wanted": {
       "title": "Maximum number of tools",
       "type": "integer",
       "description": "The maximum number of tools to collect. Leave empty to collect all available tools.",
       "minimum": 1,
-      "default": 100,
-      "editor": "number"
+      "default": 20,
+      "editor": "number",
+      "prefill": 20
     },
     "max_pages": {
       "title": "Maximum number of pages",
@@ -36,7 +43,8 @@
       "description": "A safety cap on the number of search result pages to visit.",
       "minimum": 1,
       "editor": "number",
-      "default": 20
+      "default": 20,
+      "prefill": 20
     },
     "proxyConfiguration": {
       "title": "Proxy configuration",
@@ -44,6 +52,9 @@
       "description": "Optional. Enable Apify Proxy on platform if you hit blocks.",
       "editor": "proxy",
       "default": {
+        "useApifyProxy": false
+      },
+      "prefill": {
         "useApifyProxy": false
       }
     }
