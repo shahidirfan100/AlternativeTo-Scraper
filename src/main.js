@@ -31,26 +31,6 @@ const FAST_SCRAPE_CONFIG = Object.freeze({
 });
 let useAggressiveDetailEnrichment = false;
 
-// Stealth Firefox user agents for rotation
-const USER_AGENTS = [
-    'Mozilla/5.0 (Windows NT 10.0; Win64; x64; rv:147.0) Gecko/20100101 Firefox/147.0',
-    'Mozilla/5.0 (Macintosh; Intel Mac OS X 15.7; rv:147.0) Gecko/20100101 Firefox/147.0',
-    'Mozilla/5.0 (X11; Linux x86_64; rv:147.0) Gecko/20100101 Firefox/147.0',
-    'Mozilla/5.0 (Windows NT 10.0; Win64; x64; rv:146.0) Gecko/20100101 Firefox/146.0',
-    'Mozilla/5.0 (Macintosh; Intel Mac OS X 14.5; rv:146.0) Gecko/20100101 Firefox/146.0',
-];
-const getRandomUserAgent = () => USER_AGENTS[Math.floor(Math.random() * USER_AGENTS.length)];
-
-// Randomized viewports for stealth
-const VIEWPORTS = [
-    { width: 1920, height: 1080 },
-    { width: 1366, height: 768 },
-    { width: 1536, height: 864 },
-    { width: 1440, height: 900 },
-    { width: 1600, height: 900 },
-];
-const getRandomViewport = () => VIEWPORTS[Math.floor(Math.random() * VIEWPORTS.length)];
-
 const REGION_DISPLAY = new Intl.DisplayNames(['en'], { type: 'region' });
 
 const txt = (v) => (v ? String(v).replace(/\s+/g, ' ').trim() : '');
@@ -119,6 +99,43 @@ const normalizeStartUrl = (candidate) => {
     } catch {
         return absolute;
     }
+};
+
+const blockedStartFallbacks = (blockedUrl) => {
+    const candidates = [];
+    const pushCandidate = (url) => {
+        const normalized = normalizeStartUrl(url);
+        if (normalized) candidates.push(normalized);
+    };
+
+    try {
+        const u = new URL(blockedUrl);
+        const path = u.pathname.toLowerCase();
+        const withAltHost = new URL(u.href);
+        withAltHost.hostname = u.hostname === 'www.alternativeto.net' ? 'alternativeto.net' : 'www.alternativeto.net';
+        pushCandidate(withAltHost.href);
+
+        if (path === '/category/ai-tools/' || path === '/category/ai-tools') {
+            pushCandidate('https://alternativeto.net/category/ai-tools/ai-image-generator/');
+            pushCandidate('https://alternativeto.net/browse/search/?q=AI%20tools');
+            pushCandidate('https://alternativeto.net/browse/search/?q=AI%20image%20generator');
+        } else if (path.startsWith('/category/')) {
+            const segments = path.split('/').filter(Boolean);
+            if (segments.length >= 2) {
+                pushCandidate(`https://alternativeto.net/${segments[0]}/${segments[1]}/`);
+            }
+        } else if (path.startsWith('/browse/search/')) {
+            const q = txt(u.searchParams.get('q'));
+            if (q) {
+                pushCandidate(`https://alternativeto.net/browse/search/?q=${encodeURIComponent(q)}&p=2`);
+            }
+            pushCandidate(DEFAULT_START);
+        }
+    } catch {
+        // Ignore malformed input URL and return empty fallback list.
+    }
+
+    return [...new Set(candidates.filter((candidate) => candidate !== blockedUrl))];
 };
 
 const toolUrl = (href, base = BASE_URL) => {
@@ -571,6 +588,7 @@ const needsEnrichmentRetry = (items) => {
 const needsDetailEnrichment = (item, pageKind) => {
     if (!item?.url) return false;
     if (isSparseItem(item)) return true;
+    if (!proxyEnabled) return false;
     if (pageKind === PAGE_KIND.SOFTWARE) return false;
 
     if (useAggressiveDetailEnrichment) {
@@ -611,13 +629,28 @@ const blocked = ($, html) => {
     const title = txt($('title').first().text());
     if (BLOCKED_TITLES.some((re) => re.test(title))) return true;
     const lower = String(html || '').toLowerCase();
-    // Detect Cloudflare, DataDome, PerimeterX, and generic blocks
-    return lower.includes('cf-chl') 
-        || lower.includes('cf-challenge') 
-        || lower.includes('datadome') 
-        || lower.includes('perimeterx')
-        || lower.includes('blocked')
-        || lower.includes('captcha');
+    return lower.includes('cf-chl')
+        || lower.includes('cf-challenge')
+        || lower.includes('datadome')
+        || lower.includes('perimeterx');
+};
+
+const getStablePageContent = async (page, currentUrl) => {
+    let html = await page.content();
+    let $ = cheerioLoad(html);
+    if (!blocked($, html)) return { html, $ };
+
+    await page.waitForLoadState('networkidle', { timeout: 6000 }).catch(() => {});
+    await page.waitForTimeout(2500);
+    html = await page.content();
+    $ = cheerioLoad(html);
+
+    if (blocked($, html)) {
+        blockedPages.add(currentUrl);
+        throw new Error('Blocked page detected after retry window.');
+    }
+
+    return { html, $ };
 };
 
 const searchUrl = (keyword) => {
@@ -661,16 +694,19 @@ const normalizeInput = (raw = {}) => {
 };
 
 const input = normalizeInput((await Actor.getInput()) || {});
-const proxyConfiguration = await Actor.createProxyConfiguration(input.proxyConfiguration || {
-    useApifyProxy: true,
-    apifyProxyGroups: ['RESIDENTIAL'],
-});
-useAggressiveDetailEnrichment = (input.proxyConfiguration?.useApifyProxy ?? true) !== false;
+const selectedProxyInput = input.proxyConfiguration || { useApifyProxy: false };
+const proxyConfiguration = await Actor.createProxyConfiguration(selectedProxyInput);
+const proxyEnabled = Boolean(
+    selectedProxyInput.useApifyProxy
+    || (Array.isArray(selectedProxyInput.proxyUrls) && selectedProxyInput.proxyUrls.length > 0),
+);
+useAggressiveDetailEnrichment = proxyEnabled;
 
 log.info('Starting AlternativeTo Playwright actor', {
     startUrls: input.startUrls.length,
     resultsWanted: input.resultsWanted,
     maxPages: input.maxPages,
+    proxyEnabled,
     collectDetails: FAST_SCRAPE_CONFIG.collectDetails,
     fastListingMode: FAST_SCRAPE_CONFIG.fastListingMode,
     requestDelaySecs: FAST_SCRAPE_CONFIG.requestDelaySecs,
@@ -684,6 +720,8 @@ const seenPages = new Set();
 const routedPages = new WeakSet();
 const pageApiPayloads = new WeakMap();
 const blockedPages = new Set();
+const blockedFallbackQueued = new Set();
+let hasQueuedBlockedFallback = false;
 
 const push = async (item) => {
     const clean = cleanItem(item);
@@ -728,20 +766,10 @@ router.addHandler('DETAIL', async ({ page, request }) => {
 
     await page.waitForLoadState('domcontentloaded', { timeout: 10000 });
     await page.waitForSelector('body', { timeout: 10000 });
-    
-    // Simulate human behavior with mouse movement
-    await page.mouse.move(100 + Math.random() * 200, 100 + Math.random() * 200).catch(() => {});
-    
     await page.waitForLoadState('networkidle', { timeout: 4500 }).catch(() => {});
 
     const currentUrl = request.loadedUrl || request.url;
-    const html = await page.content();
-    const $ = cheerioLoad(html);
-
-    if (blocked($, html)) {
-        blockedPages.add(currentUrl);
-        throw new Error(`Request blocked - received 403 status code.`);
-    }
+    const { $ } = await getStablePageContent(page, currentUrl);
 
     const apiPayloads = pageApiPayloads.get(page) || [];
     const extracted = extractFromPage({ $, pageUrl: currentUrl, includeCards: false, apiPayloads });
@@ -758,24 +786,14 @@ router.addDefaultHandler(async ({ page, request }) => {
 
     await page.waitForLoadState('domcontentloaded', { timeout: 10000 });
     await page.waitForSelector('body', { timeout: 10000 });
-    
-    // Simulate human behavior with random mouse movement
-    await page.mouse.move(150 + Math.random() * 300, 150 + Math.random() * 300).catch(() => {});
-    
-    let html = await page.content();
-    let $ = cheerioLoad(html);
-    if (blocked($, html)) {
-        blockedPages.add(currentUrl);
-        throw new Error(`Request blocked - received 403 status code.`);
-    }
+    let { html, $ } = await getStablePageContent(page, currentUrl);
 
     const apiPayloads = pageApiPayloads.get(page) || [];
     let extracted = extractFromPage({ $, pageUrl: currentUrl, includeCards: true, apiPayloads });
     if (needsEnrichmentRetry(extracted)) {
         await page.waitForLoadState('networkidle', { timeout: 4500 }).catch(() => {});
         await page.waitForTimeout(900);
-        html = await page.content();
-        $ = cheerioLoad(html);
+        ({ html, $ } = await getStablePageContent(page, currentUrl));
         const retryPayloads = pageApiPayloads.get(page) || [];
         const enriched = extractFromPage({ $, pageUrl: currentUrl, includeCards: true, apiPayloads: retryPayloads });
         extracted = mergeItemSets(extracted, enriched);
@@ -807,57 +825,27 @@ router.addDefaultHandler(async ({ page, request }) => {
 
     const n = nextPage($, currentUrl, pageKind, fresh.length);
     if (!n || seenPages.has(n)) return;
-    await crawler.addRequests([{ url: n, uniqueKey: `list:${n}`, userData: { pageNo: pageNo + 1 } }]);
+    await crawler.addRequests([{ url: n, uniqueKey: `list:${n}`, userData: { label: 'LIST', pageNo: pageNo + 1, seedStart: false } }]);
 });
 
 const crawler = new PlaywrightCrawler({
     requestHandler: router,
     proxyConfiguration,
     maxRequestsPerCrawl,
-    launchContext: {
-        launcher: firefox,
-        launchOptions: {
-            headless: true,
-            // Firefox-specific args for better stealth
-            firefoxUserPrefs: {
-                'dom.webdriver.enabled': false,
-                'useAutomationExtension': false,
-                'general.useragent.override': getRandomUserAgent(),
-            },
-        },
-        // Rotate user agents for stealth
-        userAgent: getRandomUserAgent(),
-    },
-    // Random viewport for each context
-    browserPoolOptions: {
-        preLaunchHooks: [
-            async (_pageId, launchContext) => {
-                const viewport = getRandomViewport();
-                if (!launchContext.launchOptions) launchContext.launchOptions = {};
-                launchContext.launchOptions.viewport = viewport;
-            },
-        ],
-    },
-    // Session management for cookie persistence
+    launchContext: { launcher: firefox, launchOptions: { headless: true } },
+    browserPoolOptions: { useFingerprints: false },
     useSessionPool: true,
     persistCookiesPerSession: true,
     sessionPoolOptions: {
-        maxPoolSize: 20,
-        sessionOptions: {
-            maxUsageCount: 50, // Reuse sessions longer
-        },
+        maxPoolSize: Math.max(input.maxConcurrency * 4, 20),
     },
-    // Performance & anti-block settings
     maxConcurrency: input.maxConcurrency,
-    maxRequestRetries: 1, // Fast fail on blocks
-    navigationTimeoutSecs: 20, // Faster failure detection
-    requestHandlerTimeoutSecs: 40, // Reduce timeout
+    maxRequestRetries: 2,
+    navigationTimeoutSecs: 30,
+    requestHandlerTimeoutSecs: 60,
     sameDomainDelaySecs: FAST_SCRAPE_CONFIG.requestDelaySecs,
     preNavigationHooks: [
         async ({ page }, gotoOptions) => {
-            // Small random delay before navigation (300-800ms)
-            await new Promise(resolve => setTimeout(resolve, 300 + Math.random() * 500));
-            
             if (!routedPages.has(page)) {
                 await page.route('**/*', async (route) => {
                     const req = route.request();
@@ -892,28 +880,36 @@ const crawler = new PlaywrightCrawler({
                     }
                 });
             }
-            // Set realistic headers
-            await page.setExtraHTTPHeaders({
-                'Accept-Language': 'en-US,en;q=0.9',
-                'Accept': 'text/html,application/xhtml+xml,application/xml;q=0.9,image/avif,image/webp,*/*;q=0.8',
-                'Accept-Encoding': 'gzip, deflate, br',
-                'DNT': '1',
-                'Connection': 'keep-alive',
-                'Upgrade-Insecure-Requests': '1',
-                'Sec-Fetch-Dest': 'document',
-                'Sec-Fetch-Mode': 'navigate',
-                'Sec-Fetch-Site': 'none',
-            });
+            await page.setExtraHTTPHeaders({ 'Accept-Language': 'en-US,en;q=0.9' });
             gotoOptions.waitUntil = 'domcontentloaded';
         },
     ],
     failedRequestHandler: async ({ request }, error) => {
         const errorMsg = error?.message || 'Unknown error';
-        const is403 = errorMsg.includes('403') || errorMsg.includes('Forbidden');
+        const failedUrl = request.loadedUrl || request.url;
+        const isBlockedStatus = /403|429|forbidden|blocked/i.test(errorMsg);
         
-        if (is403) {
-            blockedPages.add(request.loadedUrl || request.url);
-            log.warning(`Request blocked (403) - skipping: ${request.loadedUrl || request.url}`);
+        if (isBlockedStatus) {
+            blockedPages.add(failedUrl);
+            log.warning(`Request blocked - skipping: ${failedUrl}`);
+        }
+
+        const isTopSeedListRequest = request.userData?.label === 'LIST'
+            && Number(request.userData?.pageNo || 1) === 1
+            && request.userData?.seedStart === true;
+        if (isBlockedStatus && isTopSeedListRequest && pushed === 0 && proxyEnabled && !hasQueuedBlockedFallback && !blockedFallbackQueued.has(failedUrl)) {
+            blockedFallbackQueued.add(failedUrl);
+            hasQueuedBlockedFallback = true;
+            const fallbacks = blockedStartFallbacks(failedUrl)
+                .filter((url) => !seenPages.has(url))
+                .map((url) => ({ url, uniqueKey: `list:${url}`, userData: { label: 'LIST', pageNo: 1, seedStart: false } }));
+            if (fallbacks.length > 0) {
+                await crawler.addRequests(fallbacks, { forefront: true });
+                log.warning('Queued fallback start URLs after blocked first page', {
+                    blockedUrl: failedUrl,
+                    fallbackCount: fallbacks.length,
+                });
+            }
         }
         
         if (request.userData.label === 'DETAIL' && pushed < input.resultsWanted) {
@@ -924,9 +920,9 @@ const crawler = new PlaywrightCrawler({
             }
         }
         
-        if (!is403) {
+        if (!isBlockedStatus) {
             log.error('Request failed', {
-                url: request.loadedUrl || request.url,
+                url: failedUrl,
                 retries: request.retryCount,
                 error: errorMsg,
             });
@@ -937,7 +933,7 @@ const crawler = new PlaywrightCrawler({
 await crawler.run(input.startUrls.map((url) => ({
     url,
     uniqueKey: `list:${url}`,
-    userData: { pageNo: 1 },
+    userData: { label: 'LIST', pageNo: 1, seedStart: true },
 })));
 
 log.info('Run finished', {
@@ -945,5 +941,9 @@ log.info('Run finished', {
     discovered: discovered.size,
     blockedPages: blockedPages.size,
 });
+
+if (pushed === 0 && blockedPages.size > 0 && !proxyEnabled) {
+    log.error('All requests were blocked and no data was scraped. Enable Apify Proxy (prefer RESIDENTIAL) to avoid 403 blocks on AlternativeTo.');
+}
 
 await Actor.exit();
