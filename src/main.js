@@ -132,6 +132,33 @@ const blockedStartFallbacks = (blockedUrl) => {
     return [...new Set(candidates.filter((c) => c !== blockedUrl))];
 };
 
+const pageNoFromUrl = (urlValue) => {
+    try {
+        const parsed = new URL(urlValue);
+        const pageNo = parseInt(parsed.searchParams.get('p') || '1', 10);
+        return Number.isFinite(pageNo) && pageNo > 0 ? pageNo : 1;
+    } catch { return 1; }
+};
+
+const withPageNo = (urlValue, pageNo) => {
+    try {
+        const parsed = new URL(urlValue);
+        if (!Number.isFinite(pageNo) || pageNo <= 0) return parsed.href;
+        if (pageNo <= 1) parsed.searchParams.delete('p');
+        else parsed.searchParams.set('p', String(pageNo));
+        return parsed.href;
+    } catch { return null; }
+};
+
+const toggleAlternativeToHost = (urlValue) => {
+    try {
+        const parsed = new URL(urlValue);
+        if (!ALT_DOMAIN_RE.test(parsed.hostname)) return null;
+        parsed.hostname = parsed.hostname === 'www.alternativeto.net' ? 'alternativeto.net' : 'www.alternativeto.net';
+        return parsed.href;
+    } catch { return null; }
+};
+
 const searchUrl = (keyword) => {
     const u = new URL('browse/search/', BASE_URL);
     u.searchParams.set('q', keyword);
@@ -647,6 +674,7 @@ const pageApiPayloads = new WeakMap();
 const blockedPages = new Set();
 const blockedFallbackQueued = new Set();
 let hasQueuedBlockedFallback = false;
+const paginationRecoveryQueued = new Set();
 
 const push = async (item) => {
     const clean = cleanItem(item);
@@ -690,6 +718,14 @@ const getStablePageContent = async (page, currentUrl) => {
     await page.waitForTimeout(2500);
     html = await page.content();
     $ = cheerioLoad(html);
+    if (blocked($, html)) {
+        // Final recovery attempt for transient anti-bot interstitial pages.
+        await page.reload({ waitUntil: 'domcontentloaded', timeout: 20000 }).catch(() => {});
+        await page.waitForLoadState('networkidle', { timeout: 7000 }).catch(() => {});
+        await page.waitForTimeout(1200);
+        html = await page.content();
+        $ = cheerioLoad(html);
+    }
     if (blocked($, html)) {
         blockedPages.add(currentUrl);
         throw new Error('Request blocked - received 403 status code.');
@@ -740,11 +776,20 @@ const hydrateTopCards = async (page) => {
 // ─── Router: single LIST handler — listing pages only, no detail pages ───────
 const router = createPlaywrightRouter();
 
-router.addDefaultHandler(async ({ page, request }) => {
+router.addDefaultHandler(async ({ page, request, session }) => {
     const currentUrl = request.loadedUrl || request.url;
     const pageKind = classifyPageKind(currentUrl);
     const pageNo = Number(request.userData.pageNo) || 1;
     seenPages.add(currentUrl);
+    const getContentOrThrow = async () => {
+        try {
+            return await getStablePageContent(page, currentUrl);
+        } catch (error) {
+            const errorMsg = error?.message || '';
+            if (/403|429|forbidden|blocked/i.test(errorMsg)) session?.retire();
+            throw error;
+        }
+    };
 
     // Wait for DOM + initial RSC hydration
     await page.waitForLoadState('domcontentloaded', { timeout: 15000 });
@@ -762,7 +807,7 @@ router.addDefaultHandler(async ({ page, request }) => {
     await scrollPage(page);
 
     // Grab page content and run extraction
-    let { html, $ } = await getStablePageContent(page, currentUrl);
+    let { html, $ } = await getContentOrThrow();
     const apiPayloads = pageApiPayloads.get(page) || [];
     let extracted = extractFromPage($, currentUrl, apiPayloads);
     let listingUrls = extractPrimaryListingUrls($, currentUrl);
@@ -782,7 +827,7 @@ router.addDefaultHandler(async ({ page, request }) => {
         });
         await page.waitForLoadState('networkidle', { timeout: 6000 }).catch(() => {});
         await page.waitForTimeout(600);
-        ({ html, $ } = await getStablePageContent(page, currentUrl));
+        ({ html, $ } = await getContentOrThrow());
         const retryPayloads = pageApiPayloads.get(page) || [];
         extracted = mergeItemSets(extracted, extractFromPage($, currentUrl, retryPayloads));
         listingUrls = extractPrimaryListingUrls($, currentUrl);
@@ -807,7 +852,7 @@ router.addDefaultHandler(async ({ page, request }) => {
     sparseUrls = extracted.filter((it) => isSparseListingItem(it)).map((it) => it.url);
     if (pageNo > 1 && (missingListingUrls.length || sparseUrls.length)) {
         await hydrateTopCards(page);
-        ({ html, $ } = await getStablePageContent(page, currentUrl));
+        ({ html, $ } = await getContentOrThrow());
         listingUrls = extractPrimaryListingUrls($, currentUrl);
         const retryPayloads = pageApiPayloads.get(page) || [];
         const domRetryScope = new Set([...(listingUrls.size ? [...listingUrls] : []), ...missingListingUrls, ...sparseUrls]);
@@ -893,11 +938,11 @@ const crawler = new PlaywrightCrawler({
         maxPoolSize: 10,
         sessionOptions: { maxUsageCount: 25, maxErrorScore: 3 },
     },
-    maxConcurrency: 3,
-    maxRequestRetries: 2,
-    navigationTimeoutSecs: 20,
-    requestHandlerTimeoutSecs: 40,
-    sameDomainDelaySecs: 2,
+    maxConcurrency: isOnPlatform ? 2 : 3,
+    maxRequestRetries: 3,
+    navigationTimeoutSecs: 35,
+    requestHandlerTimeoutSecs: 70,
+    sameDomainDelaySecs: 3,
     preNavigationHooks: [
         async ({ page, request }, gotoOptions) => {
             // Small random pre-navigation delay
@@ -954,6 +999,13 @@ const crawler = new PlaywrightCrawler({
         const errorMsg = error?.message || 'Unknown error';
         const failedUrl = request.loadedUrl || request.url;
         const isBlocked = /403|429|forbidden|blocked/i.test(errorMsg);
+        const isTimeout = /timed out|timeout/i.test(errorMsg);
+        const failedPageNo = Number(request.userData?.pageNo) || pageNoFromUrl(failedUrl);
+        const failedKind = classifyPageKind(failedUrl);
+        const isListingPage = request.userData?.label === 'LIST'
+            || failedKind === PAGE_KIND.CATEGORY
+            || failedKind === PAGE_KIND.SEARCH
+            || failedKind === PAGE_KIND.SOFTWARE;
 
         if (isBlocked) {
             blockedPages.add(failedUrl);
@@ -971,6 +1023,50 @@ const crawler = new PlaywrightCrawler({
             if (fallbacks.length) {
                 await crawler.addRequests(fallbacks, { forefront: true });
                 log.warning('Queued fallback URLs', { blockedUrl: failedUrl, fallbacks: fallbacks.length });
+            }
+        }
+
+        // For paginated listing pages, recover and keep moving even if one page fails.
+        const canRecoverPagination = isListingPage
+            && failedPageNo > 0
+            && failedPageNo < input.maxPages
+            && pushed < input.resultsWanted;
+
+        if (canRecoverPagination) {
+            const recoveryRequests = [];
+            const addRecovery = (urlCandidate, pageNo, variant) => {
+                const normalized = normalizeStartUrl(urlCandidate);
+                if (!normalized) return;
+                const recoveryKey = `${variant}:${pageNo}:${normalized}`;
+                if (paginationRecoveryQueued.has(recoveryKey)) return;
+                paginationRecoveryQueued.add(recoveryKey);
+                recoveryRequests.push({
+                    url: normalized,
+                    uniqueKey: `list:${normalized}:recovery:${variant}:${pageNo}`,
+                    userData: {
+                        label: 'LIST',
+                        pageNo,
+                        seedStart: false,
+                        recoveryAttempt: true,
+                    },
+                });
+            };
+
+            if (isBlocked || isTimeout) {
+                addRecovery(withPageNo(failedUrl, failedPageNo), failedPageNo, 'retry-same');
+                addRecovery(toggleAlternativeToHost(withPageNo(failedUrl, failedPageNo)), failedPageNo, 'retry-alt-host');
+            }
+
+            addRecovery(withPageNo(failedUrl, failedPageNo + 1), failedPageNo + 1, 'skip-forward');
+
+            if (recoveryRequests.length) {
+                await crawler.addRequests(recoveryRequests, { forefront: true });
+                log.warning('Queued pagination recovery', {
+                    failedUrl,
+                    failedPageNo,
+                    reason: isBlocked ? 'blocked' : (isTimeout ? 'timeout' : 'other'),
+                    queued: recoveryRequests.length,
+                });
             }
         }
 
