@@ -587,6 +587,7 @@ const needsEnrichmentRetry = (items) => {
 
 const needsDetailEnrichment = (item, pageKind) => {
     if (!item?.url) return false;
+    if (!FAST_SCRAPE_CONFIG.collectDetails) return false;
     if (isSparseItem(item)) return true;
     if (!proxyEnabled) return false;
     if (pageKind === PAGE_KIND.SOFTWARE) return false;
