@@ -551,6 +551,7 @@ const needsEnrichmentRetry = (items) => {
 const needsDetailEnrichment = (item, pageKind) => {
     if (!item?.url) return false;
     if (isSparseItem(item)) return true;
+    if (pageKind === PAGE_KIND.SOFTWARE) return false;
 
     if (useAggressiveDetailEnrichment) {
         const missingScalarField = [
@@ -582,7 +583,6 @@ const needsDetailEnrichment = (item, pageKind) => {
     if (!Array.isArray(item.platforms) || item.platforms.length === 0) criticalMissing += 1;
     if (!Array.isArray(item.applicationTypes) || item.applicationTypes.length === 0) criticalMissing += 1;
     if (!txt(item.logoUrl)) criticalMissing += 1;
-    if (pageKind === PAGE_KIND.SOFTWARE && !txt(item.developer)) criticalMissing += 1;
 
     return criticalMissing >= 3;
 };
