@@ -23,6 +23,10 @@
         "type": ["string", "null"],
         "title": "Pricing"
       },
+      "cost": {
+        "type": ["string", "null"],
+        "title": "Cost"
+      },
       "license": {
         "type": ["string", "null"],
         "title": "License"
@@ -38,6 +42,32 @@
           "type": "string"
         },
         "title": "Platforms"
+      },
+      "applicationTypes": {
+        "type": ["array", "null"],
+        "items": {
+          "type": "string"
+        },
+        "title": "Application Types"
+      },
+      "images": {
+        "type": ["array", "null"],
+        "items": {
+          "type": "string",
+          "format": "uri"
+        },
+        "title": "Images"
+      },
+      "origins": {
+        "type": ["array", "null"],
+        "items": {
+          "type": "string"
+        },
+        "title": "Origins"
+      },
+      "bestAlternative": {
+        "type": ["string", "null"],
+        "title": "Best Alternative"
       },
       "logoUrl": {
         "type": ["string", "null"],
@@ -70,9 +100,14 @@
           "category",
           "rating",
           "pricing",
+          "cost",
           "license",
           "likes",
           "platforms",
+          "applicationTypes",
+          "images",
+          "origins",
+          "bestAlternative",
           "developer",
           "logoUrl",
           "url",
@@ -102,6 +137,10 @@
             "label": "Pricing",
             "format": "text"
           },
+          "cost": {
+            "label": "Cost",
+            "format": "text"
+          },
           "license": {
             "label": "License",
             "format": "text"
@@ -113,6 +152,22 @@
           "platforms": {
             "label": "Platforms",
             "format": "array"
+          },
+          "applicationTypes": {
+            "label": "Application Types",
+            "format": "array"
+          },
+          "images": {
+            "label": "Images",
+            "format": "array"
+          },
+          "origins": {
+            "label": "Origins",
+            "format": "array"
+          },
+          "bestAlternative": {
+            "label": "Best Alternative",
+            "format": "text"
           },
           "developer": {
             "label": "Developer",

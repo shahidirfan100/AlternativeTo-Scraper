@@ -1,19 +1,26 @@
 {
   "title": "AlternativeTo Scraper",
-  "description": "Scrape AI tools and alternatives from AlternativeTo.net. Provide either a search keyword OR an AlternativeTo search/category URL (startUrl, url, or startUrls). Actor paginates and optionally scrapes detail pages.",
+  "description": "Scrape AI tools and alternatives from AlternativeTo.net using fast listing/API-first extraction with pagination. Provide either a keyword or startUrls.",
   "type": "object",
   "schemaVersion": 1,
   "properties": {
     "startUrls": {
       "title": "Start URLs (list)",
       "type": "array",
-      "description": "List of AlternativeTo URLs to start from. If provided, overrides Keyword.",
+      "description": "List of AlternativeTo URLs to start from (search, category, or software alternatives pages). If provided, overrides Keyword.",
       "editor": "requestListSources",
       "default": [
         {
           "url": "https://alternativeto.net/category/ai-tools/ai-image-generator/"
         }
       ]
+    },
+    "keyword": {
+      "title": "Keyword",
+      "type": "string",
+      "description": "Search keyword used when explicit start URLs are not provided.",
+      "default": "AI image generator",
+      "editor": "textfield"
     },
     "results_wanted": {
       "title": "Maximum number of tools",

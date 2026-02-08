@@ -1,11 +1,8 @@
 # Specify the base Docker image with Playwright + Firefox
 FROM apify/actor-node-playwright-firefox:22-1.56.1
 
-# Check preinstalled packages
-RUN npm ls crawlee apify puppeteer playwright
-
-# Copy just package.json and package-lock.json first for caching
-COPY --chown=myuser:myuser package*.json Dockerfile ./
+# Copy dependency manifests and version-check script first for layer caching
+COPY --chown=myuser:myuser package*.json check-playwright-version.mjs ./
 
 # Check Playwright version matches base image
 RUN node check-playwright-version.mjs

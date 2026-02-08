@@ -1,7 +1,7 @@
 {
   "name": "alternativeto-scraper",
   "version": "1.0.0",
-  "description": "Lightweight AlternativeTo scraper for AI tools using Cheerio (Crawlee + gotScraping).",
+  "description": "Production-grade AlternativeTo scraper using Playwright + Crawlee with JSON-first extraction fallbacks.",
   "type": "module",
   "dependencies": {
     "apify": "^3.5.2",

@@ -12,5 +12,5 @@
   "storages": {
     "dataset": "./dataset_schema.json"
   },
-  "generatedBy": "gpt-5"
+  "generatedBy": "gpt-5-codex"
 }
