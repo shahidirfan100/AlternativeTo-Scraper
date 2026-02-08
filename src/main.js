@@ -31,6 +31,26 @@ const FAST_SCRAPE_CONFIG = Object.freeze({
 });
 let useAggressiveDetailEnrichment = false;
 
+// Stealth Firefox user agents for rotation
+const USER_AGENTS = [
+    'Mozilla/5.0 (Windows NT 10.0; Win64; x64; rv:147.0) Gecko/20100101 Firefox/147.0',
+    'Mozilla/5.0 (Macintosh; Intel Mac OS X 15.7; rv:147.0) Gecko/20100101 Firefox/147.0',
+    'Mozilla/5.0 (X11; Linux x86_64; rv:147.0) Gecko/20100101 Firefox/147.0',
+    'Mozilla/5.0 (Windows NT 10.0; Win64; x64; rv:146.0) Gecko/20100101 Firefox/146.0',
+    'Mozilla/5.0 (Macintosh; Intel Mac OS X 14.5; rv:146.0) Gecko/20100101 Firefox/146.0',
+];
+const getRandomUserAgent = () => USER_AGENTS[Math.floor(Math.random() * USER_AGENTS.length)];
+
+// Randomized viewports for stealth
+const VIEWPORTS = [
+    { width: 1920, height: 1080 },
+    { width: 1366, height: 768 },
+    { width: 1536, height: 864 },
+    { width: 1440, height: 900 },
+    { width: 1600, height: 900 },
+];
+const getRandomViewport = () => VIEWPORTS[Math.floor(Math.random() * VIEWPORTS.length)];
+
 const REGION_DISPLAY = new Intl.DisplayNames(['en'], { type: 'region' });
 
 const txt = (v) => (v ? String(v).replace(/\s+/g, ' ').trim() : '');
@@ -591,7 +611,13 @@ const blocked = ($, html) => {
     const title = txt($('title').first().text());
     if (BLOCKED_TITLES.some((re) => re.test(title))) return true;
     const lower = String(html || '').toLowerCase();
-    return lower.includes('cf-chl') || lower.includes('datadome') || lower.includes('perimeterx');
+    // Detect Cloudflare, DataDome, PerimeterX, and generic blocks
+    return lower.includes('cf-chl') 
+        || lower.includes('cf-challenge') 
+        || lower.includes('datadome') 
+        || lower.includes('perimeterx')
+        || lower.includes('blocked')
+        || lower.includes('captcha');
 };
 
 const searchUrl = (keyword) => {
@@ -702,6 +728,10 @@ router.addHandler('DETAIL', async ({ page, request }) => {
 
     await page.waitForLoadState('domcontentloaded', { timeout: 10000 });
     await page.waitForSelector('body', { timeout: 10000 });
+    
+    // Simulate human behavior with mouse movement
+    await page.mouse.move(100 + Math.random() * 200, 100 + Math.random() * 200).catch(() => {});
+    
     await page.waitForLoadState('networkidle', { timeout: 4500 }).catch(() => {});
 
     const currentUrl = request.loadedUrl || request.url;
@@ -710,7 +740,7 @@ router.addHandler('DETAIL', async ({ page, request }) => {
 
     if (blocked($, html)) {
         blockedPages.add(currentUrl);
-        throw new Error(`Blocked page: ${currentUrl}`);
+        throw new Error(`Request blocked - received 403 status code.`);
     }
 
     const apiPayloads = pageApiPayloads.get(page) || [];
@@ -728,11 +758,15 @@ router.addDefaultHandler(async ({ page, request }) => {
 
     await page.waitForLoadState('domcontentloaded', { timeout: 10000 });
     await page.waitForSelector('body', { timeout: 10000 });
+    
+    // Simulate human behavior with random mouse movement
+    await page.mouse.move(150 + Math.random() * 300, 150 + Math.random() * 300).catch(() => {});
+    
     let html = await page.content();
     let $ = cheerioLoad(html);
     if (blocked($, html)) {
         blockedPages.add(currentUrl);
-        throw new Error(`Blocked page: ${currentUrl}`);
+        throw new Error(`Request blocked - received 403 status code.`);
     }
 
     const apiPayloads = pageApiPayloads.get(page) || [];
@@ -780,18 +814,50 @@ const crawler = new PlaywrightCrawler({
     requestHandler: router,
     proxyConfiguration,
     maxRequestsPerCrawl,
-    launchContext: { launcher: firefox, launchOptions: { headless: true } },
-    browserPoolOptions: { useFingerprints: true },
+    launchContext: {
+        launcher: firefox,
+        launchOptions: {
+            headless: true,
+            // Firefox-specific args for better stealth
+            firefoxUserPrefs: {
+                'dom.webdriver.enabled': false,
+                'useAutomationExtension': false,
+                'general.useragent.override': getRandomUserAgent(),
+            },
+        },
+        // Rotate user agents for stealth
+        userAgent: getRandomUserAgent(),
+    },
+    // Random viewport for each context
+    browserPoolOptions: {
+        preLaunchHooks: [
+            async (_pageId, launchContext) => {
+                const viewport = getRandomViewport();
+                if (!launchContext.launchOptions) launchContext.launchOptions = {};
+                launchContext.launchOptions.viewport = viewport;
+            },
+        ],
+    },
+    // Session management for cookie persistence
     useSessionPool: true,
     persistCookiesPerSession: true,
-    sessionPoolOptions: { maxPoolSize: Math.max(input.maxConcurrency * 4, 20) },
+    sessionPoolOptions: {
+        maxPoolSize: 20,
+        sessionOptions: {
+            maxUsageCount: 50, // Reuse sessions longer
+        },
+    },
+    // Performance & anti-block settings
     maxConcurrency: input.maxConcurrency,
-    maxRequestRetries: 2,
-    navigationTimeoutSecs: 30,
-    requestHandlerTimeoutSecs: 60,
+    maxRequestRetries: 1, // Fast fail on blocks
+    navigationTimeoutSecs: 20, // Faster failure detection
+    requestHandlerTimeoutSecs: 40, // Reduce timeout
     sameDomainDelaySecs: FAST_SCRAPE_CONFIG.requestDelaySecs,
     preNavigationHooks: [
         async ({ page }, gotoOptions) => {
+            // Small random delay before navigation (300-800ms)
+            await new Promise(resolve => setTimeout(resolve, 300 + Math.random() * 500));
+            
             if (!routedPages.has(page)) {
                 await page.route('**/*', async (route) => {
                     const req = route.request();
@@ -826,20 +892,45 @@ const crawler = new PlaywrightCrawler({
                     }
                 });
             }
-            await page.setExtraHTTPHeaders({ 'Accept-Language': 'en-US,en;q=0.9' });
+            // Set realistic headers
+            await page.setExtraHTTPHeaders({
+                'Accept-Language': 'en-US,en;q=0.9',
+                'Accept': 'text/html,application/xhtml+xml,application/xml;q=0.9,image/avif,image/webp,*/*;q=0.8',
+                'Accept-Encoding': 'gzip, deflate, br',
+                'DNT': '1',
+                'Connection': 'keep-alive',
+                'Upgrade-Insecure-Requests': '1',
+                'Sec-Fetch-Dest': 'document',
+                'Sec-Fetch-Mode': 'navigate',
+                'Sec-Fetch-Site': 'none',
+            });
             gotoOptions.waitUntil = 'domcontentloaded';
         },
     ],
     failedRequestHandler: async ({ request }, error) => {
+        const errorMsg = error?.message || 'Unknown error';
+        const is403 = errorMsg.includes('403') || errorMsg.includes('Forbidden');
+        
+        if (is403) {
+            blockedPages.add(request.loadedUrl || request.url);
+            log.warning(`Request blocked (403) - skipping: ${request.loadedUrl || request.url}`);
+        }
+        
         if (request.userData.label === 'DETAIL' && pushed < input.resultsWanted) {
             const seed = cleanItem(request.userData.seed);
-            if (seed?.url && discovered.has(seed.url)) await push(seed);
+            if (seed?.url && discovered.has(seed.url)) {
+                await push(seed);
+                log.info(`Pushed seed data for failed detail page: ${seed.url}`);
+            }
         }
-        log.warning('Request failed', {
-            url: request.loadedUrl || request.url,
-            retries: request.retryCount,
-            error: error?.message || 'Unknown error',
-        });
+        
+        if (!is403) {
+            log.error('Request failed', {
+                url: request.loadedUrl || request.url,
+                retries: request.retryCount,
+                error: errorMsg,
+            });
+        }
     },
 });
 
